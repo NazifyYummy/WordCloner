@@ -1,0 +1,27 @@
+{
+  "icon_pack": "Lucide",
+  "source": "https://github.com/lucide-icons/lucide",
+  "raw_asset_base": "https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/",
+  "license_file": "resources/LUCIDE_LICENSE.txt",
+  "assets": [
+    "file-text",
+    "file-plus",
+    "circle-plus",
+    "plus",
+    "trash",
+    "chevron-down",
+    "grip-horizontal",
+    "upload",
+    "arrow-left",
+    "settings",
+    "info",
+    "triangle-alert",
+    "circle-x",
+    "circle-question-mark",
+    "minus",
+    "square",
+    "x",
+    "check"
+  ],
+  "downloaded_utc": "2026-10-12T07:13:23.805099+00:00"
+}

@@ -5,9 +5,8 @@
 """
 
 import sys
-import json
-import shutil
-import math
+from json import load, dump
+from shutil import copy2
 from copy import deepcopy
 from pathlib import Path
 from collections import Counter
@@ -19,11 +18,11 @@ from PySide6.QtWidgets import (
     QScrollArea, QColorDialog, QCheckBox
 )
 from PySide6.QtCore import (
-    Qt, QPoint, Signal, QSize, QRectF, QEvent, QTimer
+    Qt, QPoint, Signal, QSize, QRectF, QEvent, QTimer, QRegularExpression
 )
 from PySide6.QtGui import (
-    QIcon, QPixmap, QPainter, QColor, QFont, QPen, QBrush, QPainterPath,
-    QGuiApplication
+    QIcon, QPainter, QColor, QFont, QPen, QPainterPath,
+    QGuiApplication, QPalette, QRegularExpressionValidator
 )
 
 try:
@@ -39,23 +38,23 @@ except ImportError:
 # ═════════════════════════════════════════════════════════════════
 #  Paths
 # ═════════════════════════════════════════════════════════════════
-
-DOCUMENTS_DIR  = Path.home() / "Documents"
-WORDCLONER_DIR = DOCUMENTS_DIR / "WordCloner"
-WORDS_DIR      = WORDCLONER_DIR / "Words"
-TEMPLATES_JSON = WORDCLONER_DIR / "templates.json"
-SETTINGS_JSON  = WORDCLONER_DIR / "settings.json"
-
+from wordcloner_paths import (
+    APP_ROOT, DOCUMENTS_DIR, WORDCLONER_DIR, WORDS_DIR,
+    TEMPLATES_JSON, SETTINGS_JSON, migrate_legacy_data,
+)
 
 # ═════════════════════════════════════════════════════════════════
+
 #  Settings
 # ═════════════════════════════════════════════════════════════════
 
 DEFAULT_SETTINGS = {
     "output_dir": str(Path.home() / "Desktop"),
-    "placeholder_wrapper": '""',
+    "placeholder_wrapper": '##',
     "quick_access": [],
     "language": "fa",     # fa | en
+    "window_size": [720, 600],
+    "window_maximized": False,
 }
 SETTINGS = dict(DEFAULT_SETTINGS)
 
@@ -66,7 +65,7 @@ def load_settings():
     if SETTINGS_JSON.exists():
         try:
             with open(SETTINGS_JSON, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                data = load(f)
             if isinstance(data, dict):
                 SETTINGS.update(data)
                 if not isinstance(SETTINGS.get("quick_access"), list):
@@ -81,7 +80,7 @@ def save_settings():
     WORDCLONER_DIR.mkdir(parents=True, exist_ok=True)
     try:
         with open(SETTINGS_JSON, "w", encoding="utf-8") as f:
-            json.dump(SETTINGS, f, ensure_ascii=False, indent=4)
+            dump(SETTINGS, f, ensure_ascii=False, indent=4)
     except Exception as e:
         print(f"[error] saving settings: {e}")
 
@@ -89,155 +88,24 @@ def save_settings():
 # ═════════════════════════════════════════════════════════════════
 #  i18n
 # ═════════════════════════════════════════════════════════════════
+from wordcloner_translations import T
 
 LANG_MAP = {"fa": "persian", "en": "english"}
-
-
-class T:
-    """All translation strings as dicts: {lang_name: text}.
-    To add a new language just add a new key to each dict
-    and register it in LANG_MAP and SettingsPage.LANGUAGES."""
-
-    # App
-    app_title              = {'persian': 'سامانه صدور نامه',          'english': 'Letter Issuance System'}
-    settings               = {'persian': 'تنظیمات',                   'english': 'Settings'}
-    settings_spaced        = {'persian': '  تنظیمات',                 'english': '  Settings'}
-    issue_letter           = {'persian': 'صدور نامه',                 'english': 'Issue Letter'}
-    add_new_letter         = {'persian': 'افزودن نامه جدید',           'english': 'Add New Letter'}
-    back                   = {'persian': 'بازگشت',                    'english': 'Back'}
-    back_spaced            = {'persian': '  بازگشت',                  'english': '  Back'}
-
-    # Dropdown
-    select_template        = {'persian': 'انتخاب قالب نامه',           'english': 'Select Letter Template'}
-    add_letter             = {'persian': 'افزودن نامه',               'english': 'Add Letter'}
-    search_template        = {'persian': 'جستجوی قالب نامه...',        'english': 'Search letter template...'}
-    untitled               = {'persian': 'بدون نام',                   'english': 'Untitled'}
-    drag_to_reorder        = {'persian': 'برای تغییر ترتیب بکشید',      'english': 'Drag to reorder'}
-
-    # Quick Access
-    quick_access           = {'persian': 'دسترسی سریع',                'english': 'Quick Access'}
-    add_to_qa              = {'persian': 'افزودن به دسترسی سریع',       'english': 'Add to Quick Access'}
-    add_template_to_qa     = {'persian': 'افزودن قالب به دسترسی سریع', 'english': 'Add template to Quick Access'}
-    remove_from_qa         = {'persian': 'حذف از دسترسی سریع',          'english': 'Remove from Quick Access'}
-    no_qa_templates        = {'persian': 'هنوز قالبی اضافه نشده — با + اضافه کنید',
-                              'english': 'No templates added yet — use + to add'}
-    select_qa_hint         = {'persian': 'قالب‌هایی را که می‌خواهید در دسترسی سریع نمایش داده شوند انتخاب کنید:',
-                              'english': 'Select templates to show in Quick Access:'}
-    no_templates_yet       = {'persian': 'هنوز هیچ قالبی ثبت نشده است.',
-                              'english': 'No templates registered yet.'}
-    save                   = {'persian': 'ذخیره',                      'english': 'Save'}
-    cancel                 = {'persian': 'انصراف',                     'english': 'Cancel'}
-
-    # DropZone
-    drop_zone_hint         = {'persian': 'فایل ورد را اینجا رها کنید\nیا کلیک کنید تا از سیستم انتخاب شود',
-                              'english': 'Drop Word file here\nor click to select from system'}
-    select_word_file       = {'persian': 'انتخاب فایل ورد',             'english': 'Select Word File'}
-
-    # Fields
-    font_size              = {'persian': 'سایز فونت',                  'english': 'Font Size'}
-    bold                   = {'persian': 'بولد',                       'english': 'Bold'}
-    italic                 = {'persian': 'ایتالیک',                    'english': 'Italic'}
-    color                  = {'persian': 'رنگ',                        'english': 'Color'}
-    color_tooltip          = {'persian': 'رنگ متن (پیش‌فرض: مشکی)',    'english': 'Text color (default: black)'}
-    pick_color             = {'persian': 'انتخاب رنگ متن',              'english': 'Pick Text Color'}
-    font_size_tooltip      = {'persian': 'سایز فونت (Auto = هم‌اندازه‌ی متن اطراف)',
-                              'english': 'Font size (Auto = match surrounding text)'}
-    letter_name            = {'persian': 'نام نامه',                   'english': 'Letter Name'}
-    word_template_file     = {'persian': 'فایل قالب ورد',               'english': 'Word Template File'}
-    output_filename        = {'persian': 'نام فایل خروجی',              'english': 'Output File Name'}
-    variable_values        = {'persian': 'مقادیر متغیرها',              'english': 'Variable Values'}
-    confirm_save           = {'persian': 'تایید و ذخیره',               'english': 'Confirm & Save'}
-    confirm_issue          = {'persian': 'تایید و صدور نامه',           'english': 'Confirm & Issue Letter'}
-    ph_letter_name         = {'persian': 'مثلاً: نامه قبولی مقاله',      'english': 'e.g., Article Acceptance Letter'}
-    ph_filename            = {'persian': 'مثلاً: نامه_قبولی_مقاله',      'english': 'e.g., Article_Acceptance_Letter'}
-    no_variables           = {'persian': 'این قالب متغیری ندارد.',       'english': 'This template has no variables.'}
-
-    issue_named            = {'persian': 'صدور: {name}',               'english': 'Issue: {name}'}
-
-    # Settings
-    app_language           = {'persian': 'زبان برنامه',                 'english': 'App Language'}
-    output_path            = {'persian': 'مسیر خروجی نامه‌ها',          'english': 'Letters Output Path'}
-    placeholder_wrapper    = {'persian': 'عبارت دربرگیرنده متغیرها',      'english': 'Placeholder Wrapper'}
-    browse                 = {'persian': 'انتخاب…',                     'english': 'Browse…'}
-    save_settings          = {'persian': 'ذخیره تنظیمات',               'english': 'Save Settings'}
-    select_output_dir      = {'persian': 'انتخاب مسیر خروجی',           'english': 'Select Output Directory'}
-    ph_wrapper             = {'persian': 'مثلاً: ""',                   'english': 'e.g., ""'}
-    wrapper_hint           = {'persian': 'متغیرها در فایل Word بین این عبارت نوشته می‌شوند.\nمثال:  {example}',
-                              'english': 'Variables in the Word file are placed between this wrapper.\nExample:  {example}'}
-    user_name              = {'persian': 'نام کاربر',                   'english': 'User Name'}
-
-    # Dialogs
-    ok                     = {'persian': 'تایید',                      'english': 'OK'}
-    yes                    = {'persian': 'بله',                        'english': 'Yes'}
-    delete                 = {'persian': 'حذف',                        'english': 'Delete'}
-    missing_library        = {'persian': 'کتابخانه ناقص',               'english': 'Missing Library'}
-    no_docx                = {'persian': 'python-docx نصب نیست.\n\npip install python-docx',
-                              'english': 'python-docx is not installed.\n\npip install python-docx'}
-    error                  = {'persian': 'خطا',                        'english': 'Error'}
-    err_empty_name         = {'persian': 'لطفاً نام نامه را وارد کنید.',
-                              'english': 'Please enter a letter name.'}
-    err_empty_file         = {'persian': 'لطفاً فایل ورد را انتخاب یا رها کنید.',
-                              'english': 'Please select or drop a Word file.'}
-    err_name_exists        = {'persian': 'نام «{name}» قبلاً ثبت شده است.',
-                              'english': 'Name "{name}" already exists.'}
-    saved                  = {'persian': 'ذخیره شد',                   'english': 'Saved'}
-    saved_with_n           = {'persian': 'نامه «{name}» با {n} متغیر ذخیره شد.',
-                              'english': 'Letter "{name}" saved with {n} variables.'}
-    saved_no_vars          = {'persian': 'توجه: هیچ متغیری با الگوی «{w}» پیدا نشد.',
-                              'english': 'Note: no variable with pattern "{w}" was found.'}
-    err_wrapper_count      = {'persian': 'خطا در تعداد متغیرها',         'english': 'Variable Count Error'}
-    err_generic            = {'persian': 'مشکلی رخ داد:\n{err}',        'english': 'An error occurred:\n{err}'}
-    err_empty_filename     = {'persian': 'لطفاً نام فایل خروجی را وارد کنید.',
-                              'english': 'Please enter the output file name.'}
-    err_fill_one           = {'persian': 'لطفاً مقدار حداقل یکی از متغیرها را وارد کنید.',
-                              'english': 'Please fill at least one variable value.'}
-    err_output_dir_create  = {'persian': 'ساخت مسیر خروجی ناموفق:\n{err}',
-                              'english': 'Failed to create output path:\n{err}'}
-    err_template_not_found = {'persian': 'فایل قالب پیدا نشد:\n{path}',
-                              'english': 'Template file not found:\n{path}'}
-    file_exists            = {'persian': 'فایل موجود است',              'english': 'File Exists'}
-    file_overwrite         = {'persian': 'فایل «{f}» در مسیر خروجی وجود دارد.\nآن را بازنویسی کنیم؟',
-                              'english': 'File "{f}" already exists in output path.\nOverwrite it?'}
-    issued                 = {'persian': 'صادر شد',                    'english': 'Issued'}
-    issued_ok              = {'persian': 'نامه با موفقیت ذخیره شد:\n{path}',
-                              'english': 'Letter saved successfully:\n{path}'}
-    err_issue              = {'persian': 'مشکلی در صدور نامه رخ داد:\n{err}',
-                              'english': 'Error issuing letter:\n{err}'}
-    delete_template        = {'persian': 'حذف قالب',                   'english': 'Delete Template'}
-    confirm_delete_tpl     = {'persian': 'آیا از حذف «{name}» مطمئن هستید؟',
-                              'english': 'Are you sure you want to delete "{name}"?'}
-    deleted                = {'persian': 'حذف شد',                     'english': 'Deleted'}
-    deleted_ok             = {'persian': 'قالب «{name}» با موفقیت حذف شد.',
-                              'english': 'Template "{name}" deleted successfully.'}
-    err_output_empty       = {'persian': 'مسیر خروجی نمی‌تواند خالی باشد.',
-                              'english': 'Output path cannot be empty.'}
-    err_output_invalid     = {'persian': 'مسیر خروجی قابل استفاده نیست:\n{err}',
-                              'english': 'Output path is not usable:\n{err}'}
-    err_wrapper_empty      = {'persian': 'عبارت دربرگیرنده نمی‌تواند خالی باشد.',
-                              'english': 'Placeholder wrapper cannot be empty.'}
-    var_count_error_detail = {
-        'persian': ('تعداد عبارت دربرگیرنده «{w}» در فایل زوج نیست (تعداد: {n}).\n'
-                    'ممکن است یک عبارت باز بدون بسته یا بسته بدون باز باشد.\n'
-                    'لطفاً در فایل Word همهٔ متغیرها را به‌صورت {w}نام{w} بنویسید.'),
-        'english': ('The placeholder "{w}" count in the file is odd (count: {n}).\n'
-                    'There may be an opening placeholder without a closing one, or vice versa.\n'
-                    'Please write all variables in the Word file as {w}name{w}.')
-    }
 
 
 def tr(item, **kwargs):
     if not isinstance(item, dict):
         return str(item)
     key = LANG_MAP.get(SETTINGS.get("language", "fa"), "persian")
-    s = item.get(key)
-    if s is None:
-        s = item.get("persian", "")
+    value = item.get(key)
+    if value is None:
+        value = item.get("persian", "")
     if kwargs:
         try:
-            s = s.format(**kwargs)
+            value = value.format(**kwargs)
         except Exception:
             pass
-    return s
+    return value
 
 
 def _is_rtl():
@@ -247,8 +115,6 @@ def _is_rtl():
 def _dir():
     return Qt.RightToLeft if _is_rtl() else Qt.LeftToRight
 
-
-# ═════════════════════════════════════════════════════════════════
 #  Colors (only green theme)
 # ═════════════════════════════════════════════════════════════════
 
@@ -267,242 +133,12 @@ C_RED         = "#E0453A"
 # ═════════════════════════════════════════════════════════════════
 #  Icons
 # ═════════════════════════════════════════════════════════════════
-
-def icon_document(size=22, color=None):
-    color = color or C_DARK_GREEN
-    pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    pen = QPen(QColor(color), max(1.4, s * 0.085))
-    pen.setJoinStyle(Qt.RoundJoin); pen.setCapStyle(Qt.RoundCap)
-    p.setPen(pen); p.setBrush(Qt.NoBrush)
-    path = QPainterPath()
-    path.moveTo(s * 0.22, s * 0.10); path.lineTo(s * 0.60, s * 0.10)
-    path.lineTo(s * 0.80, s * 0.30); path.lineTo(s * 0.80, s * 0.90)
-    path.lineTo(s * 0.22, s * 0.90); path.closeSubpath()
-    p.drawPath(path)
-    p.drawLine(int(s * 0.60), int(s * 0.10), int(s * 0.60), int(s * 0.30))
-    p.drawLine(int(s * 0.60), int(s * 0.30), int(s * 0.80), int(s * 0.30))
-    p.drawLine(int(s * 0.34), int(s * 0.46), int(s * 0.68), int(s * 0.46))
-    p.drawLine(int(s * 0.34), int(s * 0.60), int(s * 0.68), int(s * 0.60))
-    p.drawLine(int(s * 0.34), int(s * 0.74), int(s * 0.55), int(s * 0.74))
-    p.end(); return QIcon(pm)
-
-
-def icon_document_big(size=88, color=None):
-    color = color or C_DARK_GREEN
-    pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    pen = QPen(QColor(color), s * 0.045)
-    pen.setJoinStyle(Qt.RoundJoin); pen.setCapStyle(Qt.RoundCap)
-    p.setPen(pen); p.setBrush(Qt.NoBrush)
-    path = QPainterPath()
-    path.moveTo(s * 0.18, s * 0.06); path.lineTo(s * 0.60, s * 0.06)
-    path.lineTo(s * 0.80, s * 0.26); path.lineTo(s * 0.80, s * 0.74)
-    path.lineTo(s * 0.18, s * 0.74); path.closeSubpath()
-    p.drawPath(path)
-    p.drawLine(int(s * 0.60), int(s * 0.06), int(s * 0.60), int(s * 0.26))
-    p.drawLine(int(s * 0.60), int(s * 0.26), int(s * 0.80), int(s * 0.26))
-    p.drawLine(int(s * 0.30), int(s * 0.38), int(s * 0.68), int(s * 0.38))
-    p.drawLine(int(s * 0.30), int(s * 0.52), int(s * 0.68), int(s * 0.52))
-    p.drawLine(int(s * 0.30), int(s * 0.64), int(s * 0.52), int(s * 0.64))
-    cx, cy, r = s * 0.76, s * 0.78, s * 0.20
-    p.setPen(Qt.NoPen); p.setBrush(QBrush(QColor(color)))
-    p.drawEllipse(QPoint(int(cx), int(cy)), int(r), int(r))
-    pen2 = QPen(QColor("#FFFFFF"), s * 0.045); pen2.setCapStyle(Qt.RoundCap)
-    p.setPen(pen2)
-    p.drawLine(int(cx - r * 0.5), int(cy), int(cx + r * 0.5), int(cy))
-    p.drawLine(int(cx), int(cy - r * 0.5), int(cx), int(cy + r * 0.5))
-    p.end(); return QIcon(pm)
-
-
-def icon_plus_circle(size=28, fg="#FFFFFF", bg=None):
-    bg = bg or C_GREEN
-    pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    p.setPen(Qt.NoPen); p.setBrush(QBrush(QColor(bg)))
-    p.drawEllipse(0, 0, s, s)
-    pen = QPen(QColor(fg), s * 0.10); pen.setCapStyle(Qt.RoundCap)
-    p.setPen(pen)
-    p.drawLine(int(s * 0.28), int(s * 0.5), int(s * 0.72), int(s * 0.5))
-    p.drawLine(int(s * 0.5), int(s * 0.28), int(s * 0.5), int(s * 0.72))
-    p.end(); return QIcon(pm)
-
-
-def icon_plus_white(size=14, color="#FFFFFF"):
-    pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    pen = QPen(QColor(color), max(1.8, s * 0.16))
-    pen.setCapStyle(Qt.RoundCap)
-    p.setPen(pen)
-    p.drawLine(int(s * 0.15), int(s * 0.5), int(s * 0.85), int(s * 0.5))
-    p.drawLine(int(s * 0.5), int(s * 0.15), int(s * 0.5), int(s * 0.85))
-    p.end(); return QIcon(pm)
-
-
-def icon_trash(size=18, color=None):
-    color = color or C_MUTED
-    pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    pen = QPen(QColor(color), s * 0.085)
-    pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen); p.setBrush(Qt.NoBrush)
-    p.drawLine(int(s * 0.15), int(s * 0.28), int(s * 0.85), int(s * 0.28))
-    p.drawLine(int(s * 0.38), int(s * 0.28), int(s * 0.38), int(s * 0.16))
-    p.drawLine(int(s * 0.62), int(s * 0.28), int(s * 0.62), int(s * 0.16))
-    p.drawLine(int(s * 0.38), int(s * 0.16), int(s * 0.62), int(s * 0.16))
-    path = QPainterPath()
-    path.moveTo(s * 0.28, s * 0.28); path.lineTo(s * 0.32, s * 0.86)
-    path.lineTo(s * 0.68, s * 0.86); path.lineTo(s * 0.72, s * 0.28)
-    p.drawPath(path)
-    p.drawLine(int(s * 0.44), int(s * 0.42), int(s * 0.44), int(s * 0.72))
-    p.drawLine(int(s * 0.56), int(s * 0.42), int(s * 0.56), int(s * 0.72))
-    p.end(); return QIcon(pm)
-
-
-def icon_chevron_down(size=16, color=None):
-    color = color or C_DARK_GREEN
-    pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    pen = QPen(QColor(color), s * 0.12)
-    pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen); p.setBrush(Qt.NoBrush)
-    path = QPainterPath()
-    path.moveTo(s * 0.25, s * 0.40); path.lineTo(s * 0.50, s * 0.65)
-    path.lineTo(s * 0.75, s * 0.40)
-    p.drawPath(path)
-    p.end(); return QIcon(pm)
-
-
-def icon_grip(size=16, color=None):
-    color = color or C_MUTED
-    pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    pen = QPen(QColor(color), max(1.2, s * 0.10))
-    pen.setCapStyle(Qt.RoundCap)
-    p.setPen(pen)
-    p.drawLine(int(s * 0.18), int(s * 0.30), int(s * 0.82), int(s * 0.30))
-    p.drawLine(int(s * 0.18), int(s * 0.50), int(s * 0.82), int(s * 0.50))
-    p.drawLine(int(s * 0.18), int(s * 0.70), int(s * 0.82), int(s * 0.70))
-    p.end(); return QIcon(pm)
-
-
-def icon_upload(size=56, color=None):
-    color = color or C_GREEN
-    pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    pen = QPen(QColor(color), s * 0.065)
-    pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen); p.setBrush(Qt.NoBrush)
-    p.drawLine(int(s * 0.50), int(s * 0.62), int(s * 0.50), int(s * 0.18))
-    p.drawLine(int(s * 0.50), int(s * 0.18), int(s * 0.30), int(s * 0.38))
-    p.drawLine(int(s * 0.50), int(s * 0.18), int(s * 0.70), int(s * 0.38))
-    path = QPainterPath()
-    path.moveTo(s * 0.20, s * 0.74); path.lineTo(s * 0.20, s * 0.84)
-    path.lineTo(s * 0.80, s * 0.84); path.lineTo(s * 0.80, s * 0.74)
-    p.drawPath(path)
-    p.end(); return QIcon(pm)
-
-
-def icon_arrow_left(size=18, color=None):
-    color = color or C_DARK_GREEN
-    pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    pen = QPen(QColor(color), s * 0.12)
-    pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen); p.setBrush(Qt.NoBrush)
-    p.drawLine(int(s * 0.70), int(s * 0.50), int(s * 0.25), int(s * 0.50))
-    p.drawLine(int(s * 0.25), int(s * 0.50), int(s * 0.45), int(s * 0.30))
-    p.drawLine(int(s * 0.25), int(s * 0.50), int(s * 0.45), int(s * 0.70))
-    p.end(); return QIcon(pm)
-
-
-def icon_gear(size=22, color=None):
-    color = color or C_DARK_GREEN
-    pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    cx, cy = s / 2.0, s / 2.0
-    r_tooth_outer = s * 0.46
-    r_body        = s * 0.30
-    r_hole        = s * 0.115
-    teeth         = 8
-    step          = 2 * math.pi / teeth
-
-    path = QPainterPath()
-    path.setFillRule(Qt.OddEvenFill)
-    pts = []
-    for i in range(teeth):
-        a0 = step * i - math.pi / 2
-        a_t1 = a0 - step * 0.20
-        a_t2 = a0 + step * 0.20
-        a_v1 = a0 + step * 0.30
-        a_v2 = a0 + step * 0.70
-        pts.append((cx + r_tooth_outer * math.cos(a_t1),
-                    cy + r_tooth_outer * math.sin(a_t1)))
-        pts.append((cx + r_tooth_outer * math.cos(a_t2),
-                    cy + r_tooth_outer * math.sin(a_t2)))
-        pts.append((cx + r_body * math.cos(a_v1),
-                    cy + r_body * math.sin(a_v1)))
-        pts.append((cx + r_body * math.cos(a_v2),
-                    cy + r_body * math.sin(a_v2)))
-    path.moveTo(*pts[0])
-    for pt in pts[1:]:
-        path.lineTo(*pt)
-    path.closeSubpath()
-    path.addEllipse(QRectF(cx - r_hole, cy - r_hole, r_hole * 2, r_hole * 2))
-
-    p.setPen(Qt.NoPen); p.setBrush(QBrush(QColor(color)))
-    p.drawPath(path)
-    p.end(); return QIcon(pm)
-
-
-def icon_status(size=42, kind="info"):
-    color = {
-        "info":     C_GREEN,
-        "warning":  C_GREEN,
-        "error":    C_RED,
-        "delete":   C_RED,
-        "question": C_GREEN,
-    }.get(kind, C_GREEN)
-
-    pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-    s = size
-    p.setPen(Qt.NoPen); p.setBrush(QBrush(QColor(color)))
-    p.drawEllipse(0, 0, s, s)
-    pen = QPen(QColor("#FFFFFF"), s * 0.10)
-    pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen); p.setBrush(Qt.NoBrush)
-    if kind == "info":
-        p.drawLine(int(s * 0.5), int(s * 0.26), int(s * 0.5), int(s * 0.30))
-        p.drawLine(int(s * 0.5), int(s * 0.44), int(s * 0.5), int(s * 0.74))
-    elif kind in ("warning", "question"):
-        p.drawLine(int(s * 0.5), int(s * 0.26), int(s * 0.5), int(s * 0.58))
-        p.drawLine(int(s * 0.5), int(s * 0.70), int(s * 0.5), int(s * 0.74))
-    elif kind == "error":
-        p.drawLine(int(s * 0.32), int(s * 0.32), int(s * 0.68), int(s * 0.68))
-        p.drawLine(int(s * 0.68), int(s * 0.32), int(s * 0.32), int(s * 0.68))
-    elif kind == "delete":
-        p.drawLine(int(s * 0.30), int(s * 0.38), int(s * 0.70), int(s * 0.38))
-        p.drawLine(int(s * 0.42), int(s * 0.38), int(s * 0.42), int(s * 0.30))
-        p.drawLine(int(s * 0.58), int(s * 0.38), int(s * 0.58), int(s * 0.30))
-        p.drawLine(int(s * 0.42), int(s * 0.30), int(s * 0.58), int(s * 0.30))
-        path = QPainterPath()
-        path.moveTo(s * 0.36, s * 0.38); path.lineTo(s * 0.40, s * 0.74)
-        path.lineTo(s * 0.60, s * 0.74); path.lineTo(s * 0.64, s * 0.38)
-        p.drawPath(path)
-        p.drawLine(int(s * 0.46), int(s * 0.46), int(s * 0.46), int(s * 0.68))
-        p.drawLine(int(s * 0.54), int(s * 0.46), int(s * 0.54), int(s * 0.68))
-    p.end(); return QIcon(pm)
+from wordcloner_icons import (
+    icon_document, icon_document_big, icon_plus_circle, icon_plus_white,
+    icon_trash, icon_chevron_down, icon_grip, icon_upload, icon_arrow_left,
+    icon_gear, icon_status, icon_minimize, icon_maximize, icon_close,
+    icon_check,
+)
 
 
 def apply_color_button_style(btn, hex_color):
@@ -517,8 +153,8 @@ def apply_color_button_style(btn, hex_color):
         }}
     """)
 
-
 # ═════════════════════════════════════════════════════════════════
+
 #  ComboWithArrow
 # ═════════════════════════════════════════════════════════════════
 
@@ -650,7 +286,9 @@ class ThemedDialog(QDialog):
         tf = QFont(); tf.setPointSize(10); tf.setBold(True)
         t.setFont(tf); t.setStyleSheet("color: white; background: transparent;")
         tb_lay.addWidget(t); tb_lay.addStretch()
-        close_btn = QPushButton("✕")
+        close_btn = QPushButton()
+        close_btn.setIcon(icon_close(14, "#FFFFFF"))
+        close_btn.setIconSize(QSize(14, 14))
         close_btn.setFixedSize(28, 24)
         close_btn.setCursor(Qt.PointingHandCursor)
         close_btn.setStyleSheet(f"""
@@ -796,7 +434,9 @@ class QuickAccessPicker(QDialog):
         tf = QFont(); tf.setPointSize(10); tf.setBold(True)
         t.setFont(tf); t.setStyleSheet("color: white; background: transparent;")
         tb_lay.addWidget(t); tb_lay.addStretch()
-        close_btn = QPushButton("✕")
+        close_btn = QPushButton()
+        close_btn.setIcon(icon_close(14, "#FFFFFF"))
+        close_btn.setIconSize(QSize(14, 14))
         close_btn.setFixedSize(28, 24)
         close_btn.setCursor(Qt.PointingHandCursor)
         close_btn.setStyleSheet(f"""
@@ -951,7 +591,7 @@ def load_templates_raw():
         return []
     try:
         with open(TEMPLATES_JSON, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            data = load(f)
         return data if isinstance(data, list) else []
     except Exception as e:
         print(f"[error] reading JSON: {e}")
@@ -966,7 +606,7 @@ def load_templates():
 def save_templates(templates):
     WORDCLONER_DIR.mkdir(parents=True, exist_ok=True)
     with open(TEMPLATES_JSON, "w", encoding="utf-8") as f:
-        json.dump(templates, f, ensure_ascii=False, indent=4)
+        dump(templates, f, ensure_ascii=False, indent=4)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -981,7 +621,7 @@ def normalize_quotes(text):
 
 
 def _get_wrapper():
-    return SETTINGS.get("placeholder_wrapper", '""')
+    return SETTINGS.get("placeholder_wrapper", '##')
 
 
 class WrapperCountError(ValueError):
@@ -1362,9 +1002,15 @@ class TitleBar(QFrame):
         lay.addStretch()
 
         # ── Right: minimize / maximize / close ──
-        b_min = self._btn("−", C_GREEN)
-        b_max = self._btn("☐", C_GREEN)
-        b_cls = self._btn("✕", C_RED)
+        b_min = self._btn("", C_GREEN)
+        b_max = self._btn("", C_GREEN)
+        b_cls = self._btn("", C_RED)
+        b_min.setIcon(icon_minimize(16, "#FFFFFF"))
+        b_max.setIcon(icon_maximize(16, "#FFFFFF"))
+        b_cls.setIcon(icon_close(14, "#FFFFFF"))
+        b_min.setIconSize(QSize(16, 16))
+        b_max.setIconSize(QSize(16, 16))
+        b_cls.setIconSize(QSize(14, 14))
         b_min.clicked.connect(self._win.showMinimized)
         b_max.clicked.connect(self._toggle_max)
         b_cls.clicked.connect(self._win.close)
@@ -2032,7 +1678,9 @@ class QuickAccessItem(QFrame):
         lay.addWidget(tx)
         lay.addStretch()
 
-        self.del_btn = QPushButton("✕")
+        self.del_btn = QPushButton()
+        self.del_btn.setIcon(icon_close(12, C_MUTED))
+        self.del_btn.setIconSize(QSize(12, 12))
         self.del_btn.setFixedSize(22, 22)
         self.del_btn.setCursor(Qt.PointingHandCursor)
         self.del_btn.setToolTip(tr(T.remove_from_qa))
@@ -2286,13 +1934,14 @@ class DropZone(QFrame):
         if e.button() == Qt.LeftButton:
             start_dir = str(self._file_path and Path(self._file_path).parent or DOCUMENTS_DIR)
             path, _ = QFileDialog.getOpenFileName(
-                self, tr(T.select_word_file), start_dir, "Word Document (*.docx)")
+                self, tr(T.select_word_file), start_dir, tr(T.word_file_filter))
             if path:
                 self._set_file(path)
 
     def _set_file(self, path):
         self._file_path = path
-        self.text_lbl.setText(f"✓  {Path(path).name}")
+        self.icon_lbl.setPixmap(icon_check(56).pixmap(QSize(56, 56)))
+        self.text_lbl.setText(Path(path).name)
         f = QFont(); f.setPointSize(11); f.setBold(True)
         self.text_lbl.setFont(f)
         self.text_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent; border: none;")
@@ -2303,6 +1952,7 @@ class DropZone(QFrame):
 
     def reset(self):
         self._file_path = None
+        self.icon_lbl.setPixmap(icon_upload(56).pixmap(QSize(56, 56)))
         self.text_lbl.setText(tr(T.drop_zone_hint))
         f = QFont(); f.setPointSize(11)
         self.text_lbl.setFont(f)
@@ -2356,8 +2006,8 @@ class FontSizeCombo(ComboWithArrow):
         super().__init__(editable=True)
         self.setFixedHeight(32)
         self.setMinimumWidth(100)
-        self.addItems(FONT_SIZES)
-        self.setCurrentText("Auto")
+        self.addItems([tr(T.auto)] + FONT_SIZES[1:])
+        self.setCurrentText(tr(T.auto))
         self.setToolTip(tr(T.font_size_tooltip))
 
         self.setStyleSheet(f"""
@@ -2390,6 +2040,10 @@ class FontSizeCombo(ComboWithArrow):
 
         le = self.lineEdit()
         if le is not None:
+            size_pattern = QRegularExpression(
+                r"(?:[0-9۰-۹٠-٩]+(?:[.,٫][0-9۰-۹٠-٩]*)?|[.,٫][0-9۰-۹٠-٩]+)?"
+            )
+            le.setValidator(QRegularExpressionValidator(size_pattern, le))
             le.editingFinished.connect(self._ensure_not_empty)
 
     def _ensure_not_empty(self):
@@ -2397,7 +2051,7 @@ class FontSizeCombo(ComboWithArrow):
         if le is None:
             return
         if not le.text().strip():
-            le.setText("Auto")
+            le.setText(tr(T.auto))
 
     def eventFilter(self, obj, event):
         if super().eventFilter(obj, event):
@@ -2708,7 +2362,7 @@ class AddLetterPage(QWidget):
             while dst.exists():
                 dst = WORDS_DIR / f"{src.stem}_{counter}{src.suffix}"
                 counter += 1
-            shutil.copy2(str(src), str(dst))
+            copy2(str(src), str(dst))
 
             try:
                 props = extract_placeholders(str(dst))
@@ -2720,18 +2374,22 @@ class AddLetterPage(QWidget):
                 ThemedDialog.error(self, tr(T.err_wrapper_count), str(we))
                 return
 
+            # ─── هیچ متغیری در فایل پیدا نشد → ذخیره نکن ───
+            if not props:
+                try:
+                    dst.unlink()
+                except Exception:
+                    pass
+                ThemedDialog.warning(
+                    self, tr(T.error),
+                    tr(T.err_no_vars, w=_get_wrapper()))
+                return
+
             new_obj = {"name": name, "address": str(dst), "Properties": props}
             existing.append(new_obj)
             save_templates(existing)
 
-            if props:
-                ThemedDialog.info(self, tr(T.saved),
-                                  tr(T.saved_with_n, name=name, n=len(props)))
-            else:
-                ThemedDialog.info(
-                    self, tr(T.saved),
-                    f"{tr(T.saved_with_n, name=name, n=0)}\n"
-                    f"{tr(T.saved_no_vars, w=_get_wrapper())}")
+            ThemedDialog.info(self, tr(T.saved),tr(T.saved_with_n, name=name, n=len(props)))
 
             self.reset(); self.saved.emit()
         except Exception as ex:
@@ -2740,8 +2398,7 @@ class AddLetterPage(QWidget):
                     dst.unlink()
                 except Exception:
                     pass
-            ThemedDialog.error(self, tr(T.error),
-                               tr(T.err_generic, err=ex))
+            ThemedDialog.error(self, tr(T.error),tr(T.err_generic, err=ex))
             print("[error]", ex)
 
 
@@ -2933,7 +2590,7 @@ class EditLetterPage(QWidget):
             box = self._build_field(
                 key,
                 show_labels=(idx == 0),
-                default_size=info.get("auto_size"),
+                default_size=None,
             )
             self.fields_layout.insertWidget(self.fields_layout.count() - 1, box)
 
@@ -2944,9 +2601,81 @@ class EditLetterPage(QWidget):
         btn = widgets.get("color")
         if btn is None:
             return
+
         cur = btn.property("color") or "#000000"
         dlg = QColorDialog(QColor(cur), self)
+        dlg.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
+        dlg.setOption(QColorDialog.ColorDialogOption.ShowAlphaChannel, False)
+        # QColorDialog keeps a conventional left-to-right layout in both app languages.
+        dlg.setLayoutDirection(Qt.LeftToRight)
         dlg.setWindowTitle(tr(T.pick_color))
+        dlg.setAutoFillBackground(True)
+
+        palette = dlg.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor("#FFFFFF"))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(C_DARK_GREEN))
+        palette.setColor(QPalette.ColorRole.Base, QColor("#FFFFFF"))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(C_BG))
+        palette.setColor(QPalette.ColorRole.Text, QColor(C_DARK_GREEN))
+        palette.setColor(QPalette.ColorRole.Button, QColor(C_LIGHT_GREEN))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(C_DARK_GREEN))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(C_GREEN))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+        dlg.setPalette(palette)
+
+        dlg.setStyleSheet(f"""
+            QColorDialog {{
+                background-color: #FFFFFF;
+                color: {C_DARK_GREEN};
+            }}
+            QColorDialog QLabel {{
+                color: {C_DARK_GREEN};
+                background-color: transparent;
+            }}
+            QColorDialog QLineEdit,
+            QColorDialog QSpinBox,
+            QColorDialog QDoubleSpinBox,
+            QColorDialog QComboBox {{
+                color: {C_DARK_GREEN};
+                background-color: #FFFFFF;
+                border: 1px solid {C_BORDER};
+                border-radius: 4px;
+                padding: 3px 6px;
+            }}
+            QColorDialog QPushButton {{
+                color: {C_DARK_GREEN};
+                background-color: {C_LIGHT_GREEN};
+                border: 1px solid {C_BORDER};
+                border-radius: 6px;
+                padding: 5px 12px;
+            }}
+            QColorDialog QPushButton:hover {{
+                background-color: {C_HOVER};
+                border-color: {C_GREEN};
+            }}
+        """)
+
+        def localize_color_dialog_labels():
+            # Force all already-created child controls to LTR as well; the
+            # parent application may use RTL for Persian pages.
+            dlg.setLayoutDirection(Qt.LeftToRight)
+            for control in dlg.findChildren(QWidget):
+                control.setLayoutDirection(Qt.LeftToRight)
+            for label in dlg.findChildren(QLabel):
+                label_text = label.text().replace("&", "").strip().rstrip(":").strip().casefold()
+                if label_text == "html":
+                    label.setText("HEX:")
+                    break
+            for button in dlg.findChildren(QPushButton):
+                button_text = button.text().replace("&", "").strip().casefold()
+                if button_text == "ok":
+                    button.setText(tr(T.ok))
+                elif button_text == "cancel":
+                    button.setText(tr(T.cancel))
+
+        # Run after Qt has created the non-native dialog controls.
+        QTimer.singleShot(0, localize_color_dialog_labels)
+
         if dlg.exec():
             col = dlg.currentColor()
             if col.isValid():
@@ -3118,11 +2847,20 @@ class EditLetterPage(QWidget):
             replacements[key] = widgets["input"].text()
 
             size_text = widgets["size"].currentText().strip().lower()
-            if size_text in ("", "auto"):
+            if size_text in ("", "auto", tr(T.auto).strip().lower()):
                 size_val = None
             else:
                 try:
-                    size_val = float(size_text.replace(",", "."))
+                    digit_map = str.maketrans(
+                        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+                        "01234567890123456789",
+                    )
+                    normalized_size = (
+                        size_text.translate(digit_map)
+                        .replace(",", ".")
+                        .replace("٫", ".")
+                    )
+                    size_val = float(normalized_size)
                 except ValueError:
                     size_val = None
             bold_val = widgets["bold"].isChecked()
@@ -3277,7 +3015,7 @@ class SettingsPage(QWidget):
         lay.addWidget(wrap_lbl)
 
         self.wrapper_input = QLineEdit()
-        self.wrapper_input.setText(SETTINGS.get("placeholder_wrapper", '""'))
+        self.wrapper_input.setText(SETTINGS.get("placeholder_wrapper", '##'))
         self.wrapper_input.setFixedHeight(self.IN_H)
         self.wrapper_input.setFixedWidth(self.FIELD_W)
         self.wrapper_input.setPlaceholderText(tr(T.ph_wrapper))
@@ -3434,7 +3172,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(tr(T.app_title))
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.resize(1100, 720)
+        saved_size = SETTINGS.get("window_size", [720, 600])
+        try:
+            if not isinstance(saved_size, (list, tuple)) or len(saved_size) < 2:
+                raise ValueError("invalid saved window size")
+            start_w = max(300, int(saved_size[0]))
+            start_h = max(300, int(saved_size[1]))
+        except (TypeError, ValueError, IndexError):
+            start_w, start_h = 720, 600
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            start_w = min(start_w, max(300, available.width()))
+            start_h = min(start_h, max(300, available.height()))
+        self.resize(start_w, start_h)
+        self._window_state_timer = QTimer(self)
+        self._window_state_timer.setSingleShot(True)
+        self._window_state_timer.timeout.connect(self._save_window_state)
         self.setMinimumSize(300, 300)
 
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
@@ -3635,6 +3389,45 @@ class MainWindow(QMainWindow):
         ThemedDialog.info(self, tr(T.deleted),
                           tr(T.deleted_ok, name=name))
 
+    def _schedule_window_state_save(self):
+        timer = getattr(self, "_window_state_timer", None)
+        if timer is not None:
+            timer.start(350)
+
+    def _save_window_state(self):
+        try:
+            if self.isMinimized():
+                save_settings()
+                return
+            if self.isMaximized():
+                SETTINGS["window_maximized"] = True
+                normal = self.normalGeometry()
+                if normal.isValid():
+                    SETTINGS["window_size"] = [
+                        max(300, int(normal.width())),
+                        max(300, int(normal.height())),
+                    ]
+            else:
+                SETTINGS["window_maximized"] = False
+                SETTINGS["window_size"] = [
+                    max(300, int(self.width())),
+                    max(300, int(self.height())),
+                ]
+            save_settings()
+        except Exception as exc:
+            print(f"[window] Could not save window state: {exc}")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_window_state_save()
+
+    def closeEvent(self, event):
+        timer = getattr(self, "_window_state_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._save_window_state()
+        super().closeEvent(event)
+
     def changeEvent(self, e):
         if e.type() == QEvent.WindowStateChange:
             try:
@@ -3645,18 +3438,184 @@ class MainWindow(QMainWindow):
                 self.container.update()
             except Exception:
                 pass
+            if self.isMaximized():
+                SETTINGS["window_maximized"] = True
+            elif not self.isMinimized():
+                SETTINGS["window_maximized"] = False
+            self._schedule_window_state_save()
         super().changeEvent(e)
 
+
+# ═════════════════════════════════════════════════════════════════
+#  First-run Language Selection
+# ═════════════════════════════════════════════════════════════════
+
+class LangButton(QFrame):
+    """دکمه‌ی بزرگ انتخاب زبان با افکت hover."""
+    clicked = Signal()
+
+    def __init__(self, primary, secondary, parent=None):
+        super().__init__(parent)
+        self.setObjectName("langbtn")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(160)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 20, 20, 20)
+        lay.setSpacing(4)
+        lay.addStretch()
+
+        self._primary = QLabel(primary)
+        pf = QFont(); pf.setPointSize(26); pf.setBold(True)
+        self._primary.setFont(pf)
+        self._primary.setAlignment(Qt.AlignCenter)
+        self._primary.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        self._secondary = QLabel(secondary)
+        sf = QFont(); sf.setPointSize(11)
+        self._secondary.setFont(sf)
+        self._secondary.setAlignment(Qt.AlignCenter)
+        self._secondary.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        lay.addWidget(self._primary)
+        lay.addWidget(self._secondary)
+        lay.addStretch()
+
+        self._apply_style(hover=False)
+
+    def _apply_style(self, hover):
+        if hover:
+            self.setStyleSheet(f"""
+                QFrame#langbtn {{
+                    background-color: {C_GREEN};
+                    border: 2px solid {C_DARK_GREEN};
+                    border-radius: 16px;
+                }}
+            """)
+            self._primary.setStyleSheet("color: white; background: transparent;")
+            self._secondary.setStyleSheet(
+                "color: #E6EEE8; background: transparent;")
+        else:
+            self.setStyleSheet(f"""
+                QFrame#langbtn {{
+                    background-color: {C_LIGHT_GREEN};
+                    border: 2px solid {C_BORDER};
+                    border-radius: 16px;
+                }}
+            """)
+            self._primary.setStyleSheet(
+                f"color: {C_DARK_GREEN}; background: transparent;")
+            self._secondary.setStyleSheet(
+                f"color: {C_MUTED}; background: transparent;")
+
+    def enterEvent(self, e):
+        self._apply_style(True)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._apply_style(False)
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+
+
+class LanguageSelectDialog(QDialog):
+    """دیالوگ انتخاب زبان که فقط در اولین اجرای برنامه نمایش داده می‌شود."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(
+            Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        # مستقل از زبان برنامه، این دیالوگ همیشه LTR است تا هر دو دکمه
+        # در جای متقارن دیده شوند.
+        self.setLayoutDirection(Qt.LeftToRight)
+        self.setFixedSize(460, 580)
+
+        self.selected_language = None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(18, 18, 18, 18)
+
+        frame = QFrame()
+        frame.setObjectName("langFrame")
+        frame.setStyleSheet(f"""
+            QFrame#langFrame {{
+                background-color: #FFFFFF;
+                border-radius: 20px;
+                border: 1px solid {C_BORDER};
+            }}
+        """)
+        sh = QGraphicsDropShadowEffect()
+        sh.setBlurRadius(44)
+        sh.setOffset(0, 12)
+        sh.setColor(QColor(0, 0, 0, 95))
+        frame.setGraphicsEffect(sh)
+        outer.addWidget(frame)
+
+        v = QVBoxLayout(frame)
+        v.setContentsMargins(28, 30, 28, 28)
+        v.setSpacing(14)
+
+        title = QLabel("Choose your language  •  زبان خود را انتخاب کنید")
+        tf = QFont(); tf.setPointSize(12); tf.setBold(True)
+        title.setFont(tf)
+        title.setAlignment(Qt.AlignCenter)
+        title.setWordWrap(True)
+        title.setStyleSheet(
+            f"color: {C_DARK_GREEN}; background: transparent;")
+        v.addWidget(title)
+
+        v.addSpacing(6)
+
+        persian_btn = LangButton("فارسی", "Persian")
+        english_btn = LangButton("English", "انگلیسی")
+
+        persian_btn.clicked.connect(lambda: self._choose("fa"))
+        english_btn.clicked.connect(lambda: self._choose("en"))
+
+        # stretch factor = 1 ⇒ هر دکمه نیمی از فضای عمودی را می‌گیرد.
+        v.addWidget(persian_btn, 1)
+        v.addWidget(english_btn, 1)
+
+    def _choose(self, lang):
+        self.selected_language = lang
+        self.accept()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        scr = QGuiApplication.primaryScreen()
+        if scr is not None:
+            geo = scr.availableGeometry()
+            self.move(geo.center().x() - self.width() // 2,
+                      geo.center().y() - self.height() // 2)
 
 # ═════════════════════════════════════════════════════════════════
 #  main
 # ═════════════════════════════════════════════════════════════════
 
 def main():
+    migrate_legacy_data()
+
+    # ─── تشخیص اولین اجرا قبل از بارگذاری settings ───
+    first_run = not SETTINGS_JSON.exists()
+
     load_settings()
 
+    if sys.platform == "win32":
+        myappid = "com.wordcloner.letterissuance.1.0"
+        try:
+            from ctypes import windll
+            windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except Exception as e:
+            print(f"[AppUserModelID] failed: {e}")
+
     app = QApplication(sys.argv)
-    app.setLayoutDirection(_dir())
+    icon_path = APP_ROOT / "app.ico"
+    app.setWindowIcon(QIcon(str(icon_path)))
     app.setQuitOnLastWindowClosed(True)
 
     for fam in ("Vazirmatn", "IRANSans", "Tahoma", "Segoe UI"):
@@ -3665,12 +3624,31 @@ def main():
             app.setFont(f)
             break
 
+    # ─── اولین اجرا: انتخاب زبان ───
+    if first_run:
+        dlg = LanguageSelectDialog()
+        if dlg.exec() == QDialog.Accepted and dlg.selected_language:
+            SETTINGS["language"] = dlg.selected_language
+        # در غیر این صورت (بستن دیالوگ) زبان پیش‌فرض (fa) باقی می‌ماند.
+        save_settings()
+
+    # setLayoutDirection پس از دیالوگ تا دیالوگ LTR خالص بماند.
+    app.setLayoutDirection(_dir())
+
     current = [None]
 
     def restart():
         old = current[0]
-        geo = old.geometry()
+        try:
+            old._save_window_state()
+            if hasattr(old, "_window_state_timer"):
+                old._window_state_timer.stop()
+        except Exception:
+            pass
         was_max = old.isMaximized()
+        geo = old.normalGeometry() if was_max else old.geometry()
+        if not geo.isValid():
+            geo = old.geometry()
         old.hide()
         old.deleteLater()
 
@@ -3689,12 +3667,14 @@ def main():
     def create_window():
         win = MainWindow()
         win.theme_changed.connect(restart)
-        win.show()
+        if SETTINGS.get("window_maximized") is True:
+            win.showMaximized()
+        else:
+            win.show()
         return win
 
     current[0] = create_window()
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()
