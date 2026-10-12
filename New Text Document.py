@@ -2,417 +2,12 @@
 ================================================================================
  WordCloner — Letter Issuance System
 ================================================================================
- A PySide6 desktop application for Windows that lets users register Word
- document templates containing placeholders, fill in values, and export
- finished letters with the placeholders replaced.
-
- Author's intent (for future maintainers / AI agents):
-   - This project is a single-file application. All UI, business logic,
-     persistence, and file operations live in this file.
-   - The code is intentionally structured as small, single-responsibility
-     classes so future changes remain local.
-   - The theme system is data-driven (see THEMES) and hot-swappable at
-     runtime by rebuilding the main window.
-
-================================================================================
- REQUIREMENTS
-================================================================================
-   Python 3.9+
-   pip install PySide6 python-docx
-
-================================================================================
- FILE LAYOUT / DIRECTORY STRUCTURE
-================================================================================
-   %USERPROFILE%/Documents/WordCloner/
-       ├── Words/                     # copied .docx template files
-       ├── templates.json             # list of template metadata
-       └── settings.json              # user settings (theme, output dir, ...)
-
-   Paths are defined near the top of the file as module-level constants:
-       DOCUMENTS_DIR   = Path.home() / "Documents"
-       WORDCLONER_DIR  = DOCUMENTS_DIR / "WordCloner"
-       WORDS_DIR       = WORDCLONER_DIR / "Words"
-       TEMPLATES_JSON  = WORDCLONER_DIR / "templates.json"
-       SETTINGS_JSON   = WORDCLONER_DIR / "settings.json"
-
-================================================================================
- DATA SCHEMAS
-================================================================================
-
-   --- templates.json ---
-   A JSON array of objects. Each object represents one template:
-       [
-         {
-           "name":  "Letter of Article Acceptance",   # user-chosen name
-           "address": "C:\\...\\Words\\Accepted.docx",  # absolute path to .docx
-           "Properties": {
-               "Author Name": 145,       # key = placeholder text
-               "Article Title": 210      # value = char index of placeholder start
-           }
-         },
-         ...
-       ]
-
-   --- settings.json ---
-   A single JSON object:
-       {
-         "theme": "green",                              # key in THEMES dict
-         "output_dir": "C:\\Users\\...\\Desktop",       # where finished .docx go
-         "placeholder_wrapper": "\"\""                  # wrapper around variables
-       }
-
-================================================================================
- GLOBAL STATE
-================================================================================
-   SETTINGS           : dict   - Runtime copy of settings.json content.
-                                 Always access via SETTINGS["key"], never by
-                                 re-reading the file (except on load/restart).
-                                 Written only by save_settings().
-
-   THEMES             : dict   - Static palette definitions. Keys are theme
-                                 ids ("green","blue","purple"). Values are
-                                 dicts with fields: label, dark, primary,
-                                 light, hover, bg, border, muted, accent1,
-                                 accent2.
-
-   C_*                : module-level color strings that mirror the *current*
-                                 theme. Refreshed by reload_theme_colors().
-                                 These are read directly by icons, stylesheets,
-                                 and paintEvent methods. Because they are read
-                                 at widget construction time, changing the theme
-                                 requires rebuilding the whole UI (see main()).
-
-   HANDLING THEME CHANGES:
-     - SettingsPage writes new theme to SETTINGS and emits saved.
-     - MainWindow._on_settings_saved() compares dark color of old/new theme.
-     - If changed, MainWindow.theme_changed is emitted.
-     - main()'s restart() slot destroys the old MainWindow, reloads colors,
-       and creates a fresh MainWindow. This is the ONLY correct way to
-       re-theme, since stylesheets are baked into widgets.
-
-================================================================================
- PLACEHOLDER EXTRACTION & REPLACEMENT
-================================================================================
-   The wrapper string (SETTINGS["placeholder_wrapper"], default '""') is the
-   delimiter around variable names in the Word document.
-
-   Example with default wrapper:
-       Hello ""Author Name"", welcome.
-       → extracts key "Author Name" at index 7 (after the wrapper).
-
-   IMPORTANT: Word often auto-corrects straight quotes (") to curly quotes
-   (“ ”). normalize_quotes() converts them to straight quotes so extraction
-   is uniform. Length is preserved, so character indices remain valid.
-
-   extract_placeholders():
-       - Opens .docx via python-docx
-       - Concatenates all paragraph texts with "\n"
-       - Finds ALL occurrences of the wrapper via str.find() in a loop
-       - Pairs them positionally: (positions[0], positions[1]), (positions[2],
-         positions[3]), ... — this correctly handles the case where two
-         placeholders are adjacent, unlike a naive regex.
-       - Stores {key: char_index_of_term_start}. If a key repeats, the FIRST
-         occurrence wins.
-
-   replace_placeholders_in_docx():
-       - For each paragraph (top-level + inside tables):
-           * Flatten runs into a single string + a char→(run_idx, offset) map
-           * Find all wrapper pairs; skip ones whose key isn't in replacements
-           * Build a list of "segments":
-               - (text, original_run, is_replacement=False)  → copy formatting
-               - (value, (size_pt, bold, italic), True)      → apply override
-           * Delete original runs; append new runs from segments
-       - Auto font size (when user chose "auto"):
-           * Walk outward from placeholder, comparing word-by-word:
-               depth 0: (word_before_0, word_after_0)
-               depth 1: (word_before_1, word_after_1) ...
-           * If at any depth both words have the SAME size → use it.
-           * If one side runs out → fall back to the most common size among
-             all pairs checked so far.
-           * If no words exist → None (inherit paragraph style).
-           * See compute_auto_font() for exact implementation.
-
-================================================================================
- CLASS HIERARCHY & RESPONSIBILITIES
-================================================================================
-
-   ThemedDialog (QDialog)
-     A frameless, modal dialog styled to match the app. Used EVERYWHERE instead
-     of QMessageBox.
-     Static helpers:
-       .info(parent, title, msg)           → OK only
-       .warning(parent, title, msg)        → OK only
-       .error(parent, title, msg)          → OK only
-       .confirm(parent, title, msg)        → returns bool (OK/Cancel)
-       .confirm_delete(parent, title, msg) → returns bool, red trash icon
-     The dialog auto-centers over its parent in showEvent().
-     Kinds ("info","warning","error","delete","question") select the icon and
-     accent color of icon_status().
-
-   TitleBar (QFrame)
-     Custom title bar replacing the OS chrome (window is Frameless).
-     - Holds app icon + title + min/max/close buttons.
-     - Implements drag-to-move and double-click-to-maximize by manipulating
-       the parent QMainWindow (self._win).
-     - Has top-left and top-right CSS border-radius (14px) matching Container.
-
-   Container (QWidget)
-     Root visual surface of MainWindow's content, placed inside a 16-px margin
-     that exposes the drop shadow applied in MainWindow.
-     paintEvent():
-       - Fills a rounded rect with C_BG
-       - Clips to that shape
-       - Draws two decorative green curves at the bottom-left and one faint
-         arc at the top-right (colors from current theme accents)
-       - Strokes the border in C_BORDER
-     Note: The Container's paintEvent is *behind* its children, so widgets
-     placed in its layout render on top of the decorations.
-
-   DropdownButton (QFrame)
-     The white rounded box labeled "Select template". Emits clicked on press.
-     Owns its own stylesheet (hover changes border to C_GREEN).
-
-   PopupItem (QFrame)
-     A single row inside DropdownPopup. Two flavors:
-       - is_add=True       → green circle "+" icon, bold text, light-green bg
-       - show_delete=True  → reveals a small trash QPushButton on hover
-     Hover show/hide of the delete button is done via enterEvent/leaveEvent
-     on the item; the actual click on the delete button is filtered inside
-     mousePressEvent so the row's clicked signal is NOT emitted when the user
-     clicks the trash icon.
-
-   DropdownPopup (QWidget, Qt.Popup)
-     The floating list of templates + "Add new letter" entry.
-     - Qt.Popup flag makes it auto-close on outside click.
-     - Emits:
-         add_clicked              → user clicked "Add new"
-         template_selected(dict)  → user clicked a template row
-         template_deleted(dict)   → user clicked the trash on a row
-
-   TemplateDropdown (QWidget)
-     Composite: contains a DropdownButton and manages the popup lifecycle.
-     - set_templates(list) stores the current list.
-     - _toggle() opens/closes the popup, position it under the button.
-     - Relays popup signals outward as:
-         add_requested, template_selected(dict), template_deleted(dict)
-     Re-positions popup at button.mapToGlobal(0, button.height()).
-
-   DropZone (QFrame)
-     Drag-and-drop target for a single .docx file.
-     - Accepts dragEnter only if exactly one local file ending in ".docx".
-     - Applies a "hover" stylesheet while dragging over.
-     - Clicking anywhere triggers QFileDialog.getOpenFileName.
-     - On success calls _set_file() which updates the label and emits
-       file_selected(path).
-     - reset() clears the file and label. Called before entering AddLetterPage.
-
-   RoundToggle (QPushButton, checkable)
-     Small circular toggle used for Bold ("B") and Italic ("I") per variable.
-     Visual state driven entirely by :checked pseudo-class in stylesheet.
-
-   FontSizeCombo (QComboBox, editable)
-     Pre-populated with FONT_SIZES = ["auto","8","9",...,"72"]. The user can
-     also type a custom size. Caller must parse currentText() manually:
-       "" or "auto" → None (use auto algorithm)
-       float-parseable → numeric pt size
-
-   HomePage (QWidget)
-     Landing page. Layout (RTL): gear button on the right, then a centered
-     card with app icon, big title "Letter Issuance", and TemplateDropdown.
-     Signals:
-       settings_requested → gear click
-
-   AddLetterPage (QWidget)
-     Register a new template.
-     - name_input (QLineEdit)  — user-facing template name
-     - drop_zone (DropZone)    — source .docx
-     - confirm_btn             — validates + copies + extracts + persists
-     Signals:
-       back_requested → top-left back button
-       saved          → after successful save
-     Validation rules in _on_confirm:
-       * name must be non-empty, must not collide with an existing template
-       * a file must be selected
-       * python-docx must be importable
-     Storage flow:
-       1) Copy source .docx into WORDS_DIR (auto-suffix _1, _2 on collision)
-       2) extract_placeholders() on the COPY
-       3) Append {"name", "address", "Properties"} to templates.json
-       4) Show success ThemedDialog, reset form, emit saved
-
-   EditLetterPage (QWidget)
-     Fill in variable values and export.
-     - filename_input  — target filename (sanitized; .docx appended if missing)
-     - scroll          — QScrollArea containing per-variable field rows
-     - confirm_btn     — bottom-RIGHT (in RTL this means the last item after
-                         an addStretch())
-     Signals:
-       back_requested → top-left back button; also emitted after successful
-                        export to return to HomePage.
-
-     Per-variable row (built by _build_field):
-       Row 1 (horizontal):
-         [label key ........] [FontSizeCombo] [B RoundToggle] [I RoundToggle]
-       Row 2:
-         [QLineEdit for value]
-
-     self._fields : {key -> {"input", "size", "bold", "italic"}}
-     load_template(tpl):
-       - Sets title and default filename
-       - Clears previous rows (except the trailing stretch)
-       - Sorts Properties by start index so the UI order matches document order
-       - Creates one row per key
-     _on_confirm():
-       - Sanitizes filename, resolves output_dir from SETTINGS
-       - Confirms overwrite via ThemedDialog.confirm
-       - Builds replacements dict and font_overrides dict
-       - Calls replace_placeholders_in_docx(src, out, repl, overrides)
-       - On success: info dialog + back_requested
-
-   SettingsPage (QWidget)
-     Edits SETTINGS and writes settings.json.
-     Fields:
-       theme_combo    — maps theme key via userData
-       output_input   — free text + "Browse…" button
-       wrapper_input  — text (default '""')
-     Signals:
-       back_requested, saved
-     Note: MainWindow._go_to_settings() destroys and recreates this page each
-     time to guarantee fresh values from SETTINGS.
-
-   MainWindow (QMainWindow)
-     The single top-level window. Owns:
-       - Container (central widget) with custom shadow
-       - TitleBar
-       - QStackedWidget with 4 pages: HomePage, AddLetterPage, EditLetterPage,
-         SettingsPage
-     Wiring (in __init__):
-       home.dropdown.add_requested       → _go_to_add
-       home.dropdown.template_selected   → _on_template_selected
-       home.dropdown.template_deleted    → _on_template_deleted
-       home.settings_requested           → _go_to_settings
-       add.back_requested                → _go_to_home
-       add.saved                         → _on_letter_saved (reload + home)
-       edit.back_requested               → _go_to_home
-       settings.back_requested           → _go_to_home
-       settings.saved                    → _on_settings_saved (theme diff check)
-     Also overrides changeEvent to drop the 16-px shadow margin when maximized.
-
-   main()
-     - load_settings() + reload_theme_colors()
-     - Creates QApplication, sets RTL direction, picks a reasonable font
-     - Defines restart() closure: destroys current window, reloads settings
-       and colors, creates a fresh MainWindow. Used to apply theme changes.
-     - create_window() builds and shows the first MainWindow, wiring
-       theme_changed → restart.
-
-================================================================================
- KEY FUNCTION REFERENCE
-================================================================================
-
-   load_settings() / save_settings()
-     Read/write settings.json into/from the SETTINGS global.
-
-   reload_theme_colors()
-     Copies the active theme's colors into the module-level C_* globals.
-     MUST be called after load_settings() and before constructing any widget.
-
-   get_theme() → dict
-     Returns the full active theme dict (used by icon_status).
-
-   extract_placeholders(docx_path) → dict[str, int]
-     See section PLACEHOLDER EXTRACTION.
-
-   compute_auto_font(runs, char_map, text, ph_start, ph_end) → float | None
-     Implements the "auto" font-size algorithm described above. Returns
-     None if no neighbors had explicit sizes.
-
-   replace_placeholders_in_docx(src, dst, replacements, font_overrides)
-     replacements   : {key: value_str}
-     font_overrides : {key: (size_pt_or_None, bold_bool, italic_bool)}
-     See PLACEHOLDER EXTRACTION for algorithm details.
-
-   normalize_quotes(text) → str
-     Straightens Word's curly quotes. Length-preserving.
-
-   All icon_*() functions
-     Pure functions returning QIcon drawn via QPainter. They accept size and
-     optional color; colors default to the current theme's C_* globals.
-     Because they read C_* at call time, they must be re-invoked after a
-     theme change (which the full window rebuild accomplishes).
-
-================================================================================
- EXTENSION GUIDELINES (for future AI contributors)
-================================================================================
-   1) Adding a new page:
-      - Subclass QWidget with a "transparent" stylesheet background.
-      - Instantiate it in MainWindow.__init__, add to self.stack.
-      - Wire navigation via signals (never call stack.setCurrentWidget across
-        pages directly; always go through a MainWindow slot).
-
-   2) Adding a new setting:
-      - Add the default to DEFAULT_SETTINGS.
-      - Add a widget to SettingsPage; read it in _on_save().
-      - Access at runtime via SETTINGS["key"].
-
-   3) Adding a new theme:
-      - Add a key to THEMES with the same field set.
-      - No other changes needed — the combo populates from THEMES.
-
-   4) Changing placeholder delimiter:
-      - Do NOT hardcode '""' anywhere. Always use _get_wrapper().
-
-   5) Changing the auto-font heuristic:
-      - Only edit compute_auto_font(). Its contract is:
-          inputs  = paragraph runs + char map + normalized text + indices
-          output  = float pt size OR None (inherit)
-      - The caller assumes the return value is directly usable by Pt().
-
-   6) Changing document traversal:
-      - Currently paragraphs and table-cell paragraphs are processed.
-      - Headers/footers/sections are NOT processed. If needed, add them in
-        replace_placeholders_in_docx by iterating doc.sections and
-        doc.sections[i].header/.footer paragraphs.
-
-   7) Changing a widget's colors dynamically:
-      - Prefer full-window rebuild via main.restart() as done for themes.
-      - Local recoloring is possible but you must also refresh any cached
-        QIcon objects (they bake QColor at creation time).
-
-   8) Error handling policy:
-      - Never use QMessageBox. Always use ThemedDialog.*
-      - Catch broad Exception in user-triggered operations and surface a
-        ThemedDialog.error with the exception message.
-
-   9) Persistence rules:
-      - templates.json is read/written only through load_templates_raw,
-        load_templates, save_templates.
-      - settings.json only through load_settings / save_settings.
-
-================================================================================
- KNOWN LIMITATIONS / TODO
-================================================================================
-   - When a paragraph contains MULTIPLE different runs with distinct
-     formatting (e.g., mixed bold/italic mid-paragraph), the replacement
-     routine rebuilds runs and copies properties from the original run that
-     contained the first character of each output segment. Richly formatted
-     runs that were merged during flattening lose sub-run boundaries.
-   - Headers/footers and footnotes are not processed.
-   - Images inside paragraphs are preserved because we only manipulate text
-     runs; but any inline image anchored to a run that gets removed could be
-     lost. Test with image-heavy templates.
-   - Theme change rebuilds the window; unsaved form state is lost.
-   - The auto font size uses only the run's explicit `font.size`. It does not
-     fall back to the paragraph style or document defaults, so templates that
-     rely on paragraph-level sizes may return None and inherit naturally.
-================================================================================
 """
 
 import sys
 import json
 import shutil
 import math
-import base64
 from copy import deepcopy
 from pathlib import Path
 from collections import Counter
@@ -421,9 +16,11 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QGraphicsDropShadowEffect,
     QStackedWidget, QLineEdit, QFileDialog, QDialog, QComboBox,
-    QScrollArea
+    QScrollArea, QColorDialog, QCheckBox
 )
-from PySide6.QtCore import Qt, QPoint, Signal, QSize, QRectF, QEvent
+from PySide6.QtCore import (
+    Qt, QPoint, Signal, QSize, QRectF, QEvent, QTimer
+)
 from PySide6.QtGui import (
     QIcon, QPixmap, QPainter, QColor, QFont, QPen, QBrush, QPainterPath,
     QGuiApplication
@@ -431,16 +28,16 @@ from PySide6.QtGui import (
 
 try:
     from docx import Document
-    from docx.shared import Pt
+    from docx.shared import Pt, RGBColor
     from docx.oxml.ns import qn
     HAS_DOCX = True
 except ImportError:
     HAS_DOCX = False
-    print("[هشدار] python-docx نصب نیست → pip install python-docx")
+    print("[warning] python-docx is not installed → pip install python-docx")
 
 
 # ═════════════════════════════════════════════════════════════════
-#  مسیرها
+#  Paths
 # ═════════════════════════════════════════════════════════════════
 
 DOCUMENTS_DIR  = Path.home() / "Documents"
@@ -451,13 +48,14 @@ SETTINGS_JSON  = WORDCLONER_DIR / "settings.json"
 
 
 # ═════════════════════════════════════════════════════════════════
-#  تنظیمات
+#  Settings
 # ═════════════════════════════════════════════════════════════════
 
 DEFAULT_SETTINGS = {
-    "theme": "green",
     "output_dir": str(Path.home() / "Desktop"),
     "placeholder_wrapper": '""',
+    "quick_access": [],
+    "language": "fa",     # fa | en
 }
 SETTINGS = dict(DEFAULT_SETTINGS)
 
@@ -471,8 +69,12 @@ def load_settings():
                 data = json.load(f)
             if isinstance(data, dict):
                 SETTINGS.update(data)
+                if not isinstance(SETTINGS.get("quick_access"), list):
+                    SETTINGS["quick_access"] = []
+                if SETTINGS.get("language") not in ("fa", "en"):
+                    SETTINGS["language"] = "fa"
         except Exception as e:
-            print(f"[خطا] خواندن settings: {e}")
+            print(f"[error] reading settings: {e}")
 
 
 def save_settings():
@@ -481,37 +83,174 @@ def save_settings():
         with open(SETTINGS_JSON, "w", encoding="utf-8") as f:
             json.dump(SETTINGS, f, ensure_ascii=False, indent=4)
     except Exception as e:
-        print(f"[خطا] ذخیره settings: {e}")
+        print(f"[error] saving settings: {e}")
 
 
 # ═════════════════════════════════════════════════════════════════
-#  تم‌ها
+#  i18n
 # ═════════════════════════════════════════════════════════════════
 
-THEMES = {
-    "green": {
-        "label": "سبز",
-        "dark": "#2E5A4C", "primary": "#3A7A5E",
-        "light": "#E8F0EC", "hover": "#F0F5F2",
-        "bg": "#F4F7F2", "border": "#D0DDD5", "muted": "#7A8F86",
-        "accent1": "#8FB5A2", "accent2": "#E6EEE8",
-    },
-    "blue": {
-        "label": "آبی",
-        "dark": "#1E3A5F", "primary": "#2E6FA5",
-        "light": "#E5EEF7", "hover": "#EFF5FA",
-        "bg": "#F4F7FA", "border": "#CFDBE6", "muted": "#7A8A9E",
-        "accent1": "#88A9C9", "accent2": "#E5EBF2",
-    },
-    "purple": {
-        "label": "بنفش",
-        "dark": "#4A2E6A", "primary": "#6A46A0",
-        "light": "#EDE5F5", "hover": "#F4EFF9",
-        "bg": "#F7F4FA", "border": "#D9CFE5", "muted": "#8A7E9E",
-        "accent1": "#A890C9", "accent2": "#EEE9F4",
-    },
-}
+LANG_MAP = {"fa": "persian", "en": "english"}
 
+
+class T:
+    """All translation strings as dicts: {lang_name: text}.
+    To add a new language just add a new key to each dict
+    and register it in LANG_MAP and SettingsPage.LANGUAGES."""
+
+    # App
+    app_title              = {'persian': 'سامانه صدور نامه',          'english': 'Letter Issuance System'}
+    settings               = {'persian': 'تنظیمات',                   'english': 'Settings'}
+    settings_spaced        = {'persian': '  تنظیمات',                 'english': '  Settings'}
+    issue_letter           = {'persian': 'صدور نامه',                 'english': 'Issue Letter'}
+    add_new_letter         = {'persian': 'افزودن نامه جدید',           'english': 'Add New Letter'}
+    back                   = {'persian': 'بازگشت',                    'english': 'Back'}
+    back_spaced            = {'persian': '  بازگشت',                  'english': '  Back'}
+
+    # Dropdown
+    select_template        = {'persian': 'انتخاب قالب نامه',           'english': 'Select Letter Template'}
+    add_letter             = {'persian': 'افزودن نامه',               'english': 'Add Letter'}
+    search_template        = {'persian': 'جستجوی قالب نامه...',        'english': 'Search letter template...'}
+    untitled               = {'persian': 'بدون نام',                   'english': 'Untitled'}
+    drag_to_reorder        = {'persian': 'برای تغییر ترتیب بکشید',      'english': 'Drag to reorder'}
+
+    # Quick Access
+    quick_access           = {'persian': 'دسترسی سریع',                'english': 'Quick Access'}
+    add_to_qa              = {'persian': 'افزودن به دسترسی سریع',       'english': 'Add to Quick Access'}
+    add_template_to_qa     = {'persian': 'افزودن قالب به دسترسی سریع', 'english': 'Add template to Quick Access'}
+    remove_from_qa         = {'persian': 'حذف از دسترسی سریع',          'english': 'Remove from Quick Access'}
+    no_qa_templates        = {'persian': 'هنوز قالبی اضافه نشده — با + اضافه کنید',
+                              'english': 'No templates added yet — use + to add'}
+    select_qa_hint         = {'persian': 'قالب‌هایی را که می‌خواهید در دسترسی سریع نمایش داده شوند انتخاب کنید:',
+                              'english': 'Select templates to show in Quick Access:'}
+    no_templates_yet       = {'persian': 'هنوز هیچ قالبی ثبت نشده است.',
+                              'english': 'No templates registered yet.'}
+    save                   = {'persian': 'ذخیره',                      'english': 'Save'}
+    cancel                 = {'persian': 'انصراف',                     'english': 'Cancel'}
+
+    # DropZone
+    drop_zone_hint         = {'persian': 'فایل ورد را اینجا رها کنید\nیا کلیک کنید تا از سیستم انتخاب شود',
+                              'english': 'Drop Word file here\nor click to select from system'}
+    select_word_file       = {'persian': 'انتخاب فایل ورد',             'english': 'Select Word File'}
+
+    # Fields
+    font_size              = {'persian': 'سایز فونت',                  'english': 'Font Size'}
+    bold                   = {'persian': 'بولد',                       'english': 'Bold'}
+    italic                 = {'persian': 'ایتالیک',                    'english': 'Italic'}
+    color                  = {'persian': 'رنگ',                        'english': 'Color'}
+    color_tooltip          = {'persian': 'رنگ متن (پیش‌فرض: مشکی)',    'english': 'Text color (default: black)'}
+    pick_color             = {'persian': 'انتخاب رنگ متن',              'english': 'Pick Text Color'}
+    font_size_tooltip      = {'persian': 'سایز فونت (Auto = هم‌اندازه‌ی متن اطراف)',
+                              'english': 'Font size (Auto = match surrounding text)'}
+    letter_name            = {'persian': 'نام نامه',                   'english': 'Letter Name'}
+    word_template_file     = {'persian': 'فایل قالب ورد',               'english': 'Word Template File'}
+    output_filename        = {'persian': 'نام فایل خروجی',              'english': 'Output File Name'}
+    variable_values        = {'persian': 'مقادیر متغیرها',              'english': 'Variable Values'}
+    confirm_save           = {'persian': 'تایید و ذخیره',               'english': 'Confirm & Save'}
+    confirm_issue          = {'persian': 'تایید و صدور نامه',           'english': 'Confirm & Issue Letter'}
+    ph_letter_name         = {'persian': 'مثلاً: نامه قبولی مقاله',      'english': 'e.g., Article Acceptance Letter'}
+    ph_filename            = {'persian': 'مثلاً: نامه_قبولی_مقاله',      'english': 'e.g., Article_Acceptance_Letter'}
+    no_variables           = {'persian': 'این قالب متغیری ندارد.',       'english': 'This template has no variables.'}
+
+    issue_named            = {'persian': 'صدور: {name}',               'english': 'Issue: {name}'}
+
+    # Settings
+    app_language           = {'persian': 'زبان برنامه',                 'english': 'App Language'}
+    output_path            = {'persian': 'مسیر خروجی نامه‌ها',          'english': 'Letters Output Path'}
+    placeholder_wrapper    = {'persian': 'عبارت دربرگیرنده متغیرها',      'english': 'Placeholder Wrapper'}
+    browse                 = {'persian': 'انتخاب…',                     'english': 'Browse…'}
+    save_settings          = {'persian': 'ذخیره تنظیمات',               'english': 'Save Settings'}
+    select_output_dir      = {'persian': 'انتخاب مسیر خروجی',           'english': 'Select Output Directory'}
+    ph_wrapper             = {'persian': 'مثلاً: ""',                   'english': 'e.g., ""'}
+    wrapper_hint           = {'persian': 'متغیرها در فایل Word بین این عبارت نوشته می‌شوند.\nمثال:  {example}',
+                              'english': 'Variables in the Word file are placed between this wrapper.\nExample:  {example}'}
+    user_name              = {'persian': 'نام کاربر',                   'english': 'User Name'}
+
+    # Dialogs
+    ok                     = {'persian': 'تایید',                      'english': 'OK'}
+    yes                    = {'persian': 'بله',                        'english': 'Yes'}
+    delete                 = {'persian': 'حذف',                        'english': 'Delete'}
+    missing_library        = {'persian': 'کتابخانه ناقص',               'english': 'Missing Library'}
+    no_docx                = {'persian': 'python-docx نصب نیست.\n\npip install python-docx',
+                              'english': 'python-docx is not installed.\n\npip install python-docx'}
+    error                  = {'persian': 'خطا',                        'english': 'Error'}
+    err_empty_name         = {'persian': 'لطفاً نام نامه را وارد کنید.',
+                              'english': 'Please enter a letter name.'}
+    err_empty_file         = {'persian': 'لطفاً فایل ورد را انتخاب یا رها کنید.',
+                              'english': 'Please select or drop a Word file.'}
+    err_name_exists        = {'persian': 'نام «{name}» قبلاً ثبت شده است.',
+                              'english': 'Name "{name}" already exists.'}
+    saved                  = {'persian': 'ذخیره شد',                   'english': 'Saved'}
+    saved_with_n           = {'persian': 'نامه «{name}» با {n} متغیر ذخیره شد.',
+                              'english': 'Letter "{name}" saved with {n} variables.'}
+    saved_no_vars          = {'persian': 'توجه: هیچ متغیری با الگوی «{w}» پیدا نشد.',
+                              'english': 'Note: no variable with pattern "{w}" was found.'}
+    err_wrapper_count      = {'persian': 'خطا در تعداد متغیرها',         'english': 'Variable Count Error'}
+    err_generic            = {'persian': 'مشکلی رخ داد:\n{err}',        'english': 'An error occurred:\n{err}'}
+    err_empty_filename     = {'persian': 'لطفاً نام فایل خروجی را وارد کنید.',
+                              'english': 'Please enter the output file name.'}
+    err_fill_one           = {'persian': 'لطفاً مقدار حداقل یکی از متغیرها را وارد کنید.',
+                              'english': 'Please fill at least one variable value.'}
+    err_output_dir_create  = {'persian': 'ساخت مسیر خروجی ناموفق:\n{err}',
+                              'english': 'Failed to create output path:\n{err}'}
+    err_template_not_found = {'persian': 'فایل قالب پیدا نشد:\n{path}',
+                              'english': 'Template file not found:\n{path}'}
+    file_exists            = {'persian': 'فایل موجود است',              'english': 'File Exists'}
+    file_overwrite         = {'persian': 'فایل «{f}» در مسیر خروجی وجود دارد.\nآن را بازنویسی کنیم؟',
+                              'english': 'File "{f}" already exists in output path.\nOverwrite it?'}
+    issued                 = {'persian': 'صادر شد',                    'english': 'Issued'}
+    issued_ok              = {'persian': 'نامه با موفقیت ذخیره شد:\n{path}',
+                              'english': 'Letter saved successfully:\n{path}'}
+    err_issue              = {'persian': 'مشکلی در صدور نامه رخ داد:\n{err}',
+                              'english': 'Error issuing letter:\n{err}'}
+    delete_template        = {'persian': 'حذف قالب',                   'english': 'Delete Template'}
+    confirm_delete_tpl     = {'persian': 'آیا از حذف «{name}» مطمئن هستید؟',
+                              'english': 'Are you sure you want to delete "{name}"?'}
+    deleted                = {'persian': 'حذف شد',                     'english': 'Deleted'}
+    deleted_ok             = {'persian': 'قالب «{name}» با موفقیت حذف شد.',
+                              'english': 'Template "{name}" deleted successfully.'}
+    err_output_empty       = {'persian': 'مسیر خروجی نمی‌تواند خالی باشد.',
+                              'english': 'Output path cannot be empty.'}
+    err_output_invalid     = {'persian': 'مسیر خروجی قابل استفاده نیست:\n{err}',
+                              'english': 'Output path is not usable:\n{err}'}
+    err_wrapper_empty      = {'persian': 'عبارت دربرگیرنده نمی‌تواند خالی باشد.',
+                              'english': 'Placeholder wrapper cannot be empty.'}
+    var_count_error_detail = {
+        'persian': ('تعداد عبارت دربرگیرنده «{w}» در فایل زوج نیست (تعداد: {n}).\n'
+                    'ممکن است یک عبارت باز بدون بسته یا بسته بدون باز باشد.\n'
+                    'لطفاً در فایل Word همهٔ متغیرها را به‌صورت {w}نام{w} بنویسید.'),
+        'english': ('The placeholder "{w}" count in the file is odd (count: {n}).\n'
+                    'There may be an opening placeholder without a closing one, or vice versa.\n'
+                    'Please write all variables in the Word file as {w}name{w}.')
+    }
+
+
+def tr(item, **kwargs):
+    if not isinstance(item, dict):
+        return str(item)
+    key = LANG_MAP.get(SETTINGS.get("language", "fa"), "persian")
+    s = item.get(key)
+    if s is None:
+        s = item.get("persian", "")
+    if kwargs:
+        try:
+            s = s.format(**kwargs)
+        except Exception:
+            pass
+    return s
+
+
+def _is_rtl():
+    return SETTINGS.get("language", "fa") == "fa"
+
+
+def _dir():
+    return Qt.RightToLeft if _is_rtl() else Qt.LeftToRight
+
+
+# ═════════════════════════════════════════════════════════════════
+#  Colors (only green theme)
+# ═════════════════════════════════════════════════════════════════
 
 C_DARK_GREEN  = "#2E5A4C"
 C_GREEN       = "#3A7A5E"
@@ -523,44 +262,10 @@ C_MUTED       = "#7A8F86"
 C_ACCENT1     = "#8FB5A2"
 C_ACCENT2     = "#E6EEE8"
 C_RED         = "#E0453A"
-C_ORANGE      = "#E6A23C"
-
-
-def reload_theme_colors():
-    global C_DARK_GREEN, C_GREEN, C_LIGHT_GREEN, C_HOVER
-    global C_BG, C_BORDER, C_MUTED, C_ACCENT1, C_ACCENT2
-    t = THEMES.get(SETTINGS.get("theme", "green"), THEMES["green"])
-    C_DARK_GREEN  = t["dark"]
-    C_GREEN       = t["primary"]
-    C_LIGHT_GREEN = t["light"]
-    C_HOVER       = t["hover"]
-    C_BG          = t["bg"]
-    C_BORDER      = t["border"]
-    C_MUTED       = t["muted"]
-    C_ACCENT1     = t["accent1"]
-    C_ACCENT2     = t["accent2"]
-
-
-def get_theme():
-    return THEMES.get(SETTINGS.get("theme", "green"), THEMES["green"])
-
-
-def _svg_arrow_uri(color_hex):
-    """فلش رو به پایین واضح (SVG base64)."""
-    svg = (
-        "<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' "
-        "viewBox='0 0 14 14'>"
-        f"<path d='M3.5 5.2 L7 8.7 L10.5 5.2' stroke='{color_hex}' "
-        "stroke-width='2' fill='none' "
-        "stroke-linecap='round' stroke-linejoin='round'/>"
-        "</svg>"
-    )
-    b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
-    return f"url(data:image/svg+xml;base64,{b64})"
 
 
 # ═════════════════════════════════════════════════════════════════
-#  آیکون‌سازها
+#  Icons
 # ═════════════════════════════════════════════════════════════════
 
 def icon_document(size=22, color=None):
@@ -626,6 +331,18 @@ def icon_plus_circle(size=28, fg="#FFFFFF", bg=None):
     p.end(); return QIcon(pm)
 
 
+def icon_plus_white(size=14, color="#FFFFFF"):
+    pm = QPixmap(size, size); pm.fill(Qt.transparent)
+    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
+    s = size
+    pen = QPen(QColor(color), max(1.8, s * 0.16))
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    p.drawLine(int(s * 0.15), int(s * 0.5), int(s * 0.85), int(s * 0.5))
+    p.drawLine(int(s * 0.5), int(s * 0.15), int(s * 0.5), int(s * 0.85))
+    p.end(); return QIcon(pm)
+
+
 def icon_trash(size=18, color=None):
     color = color or C_MUTED
     pm = QPixmap(size, size); pm.fill(Qt.transparent)
@@ -652,13 +369,27 @@ def icon_chevron_down(size=16, color=None):
     pm = QPixmap(size, size); pm.fill(Qt.transparent)
     p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
     s = size
-    pen = QPen(QColor(color), s * 0.14)
+    pen = QPen(QColor(color), s * 0.12)
     pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
     p.setPen(pen); p.setBrush(Qt.NoBrush)
     path = QPainterPath()
-    path.moveTo(s * 0.22, s * 0.38); path.lineTo(s * 0.50, s * 0.66)
-    path.lineTo(s * 0.78, s * 0.38)
+    path.moveTo(s * 0.25, s * 0.40); path.lineTo(s * 0.50, s * 0.65)
+    path.lineTo(s * 0.75, s * 0.40)
     p.drawPath(path)
+    p.end(); return QIcon(pm)
+
+
+def icon_grip(size=16, color=None):
+    color = color or C_MUTED
+    pm = QPixmap(size, size); pm.fill(Qt.transparent)
+    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
+    s = size
+    pen = QPen(QColor(color), max(1.2, s * 0.10))
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    p.drawLine(int(s * 0.18), int(s * 0.30), int(s * 0.82), int(s * 0.30))
+    p.drawLine(int(s * 0.18), int(s * 0.50), int(s * 0.82), int(s * 0.50))
+    p.drawLine(int(s * 0.18), int(s * 0.70), int(s * 0.82), int(s * 0.70))
     p.end(); return QIcon(pm)
 
 
@@ -699,35 +430,49 @@ def icon_gear(size=22, color=None):
     pm = QPixmap(size, size); pm.fill(Qt.transparent)
     p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
     s = size
-    cx, cy = s * 0.5, s * 0.5
-    r_outer = s * 0.42
-    r_ring  = s * 0.28
-    r_hole  = s * 0.11
-    pen = QPen(QColor(color), s * 0.095)
-    pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen); p.setBrush(Qt.NoBrush)
-    teeth = 8
+    cx, cy = s / 2.0, s / 2.0
+    r_tooth_outer = s * 0.46
+    r_body        = s * 0.30
+    r_hole        = s * 0.115
+    teeth         = 8
+    step          = 2 * math.pi / teeth
+
+    path = QPainterPath()
+    path.setFillRule(Qt.OddEvenFill)
+    pts = []
     for i in range(teeth):
-        a = 2 * math.pi * i / teeth - math.pi / 2
-        x1 = cx + math.cos(a) * r_ring
-        y1 = cy + math.sin(a) * r_ring
-        x2 = cx + math.cos(a) * r_outer
-        y2 = cy + math.sin(a) * r_outer
-        p.drawLine(QPoint(int(x1), int(y1)), QPoint(int(x2), int(y2)))
-    p.drawEllipse(QPoint(int(cx), int(cy)), int(r_ring), int(r_ring))
-    p.drawEllipse(QPoint(int(cx), int(cy)), int(r_hole), int(r_hole))
+        a0 = step * i - math.pi / 2
+        a_t1 = a0 - step * 0.20
+        a_t2 = a0 + step * 0.20
+        a_v1 = a0 + step * 0.30
+        a_v2 = a0 + step * 0.70
+        pts.append((cx + r_tooth_outer * math.cos(a_t1),
+                    cy + r_tooth_outer * math.sin(a_t1)))
+        pts.append((cx + r_tooth_outer * math.cos(a_t2),
+                    cy + r_tooth_outer * math.sin(a_t2)))
+        pts.append((cx + r_body * math.cos(a_v1),
+                    cy + r_body * math.sin(a_v1)))
+        pts.append((cx + r_body * math.cos(a_v2),
+                    cy + r_body * math.sin(a_v2)))
+    path.moveTo(*pts[0])
+    for pt in pts[1:]:
+        path.lineTo(*pt)
+    path.closeSubpath()
+    path.addEllipse(QRectF(cx - r_hole, cy - r_hole, r_hole * 2, r_hole * 2))
+
+    p.setPen(Qt.NoPen); p.setBrush(QBrush(QColor(color)))
+    p.drawPath(path)
     p.end(); return QIcon(pm)
 
 
 def icon_status(size=42, kind="info"):
-    T = get_theme()
     color = {
-        "info":     T["primary"],
-        "warning":  C_ORANGE,
+        "info":     C_GREEN,
+        "warning":  C_GREEN,
         "error":    C_RED,
         "delete":   C_RED,
-        "question": T["primary"],
-    }.get(kind, T["primary"])
+        "question": C_GREEN,
+    }.get(kind, C_GREEN)
 
     pm = QPixmap(size, size); pm.fill(Qt.transparent)
     p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
@@ -760,18 +505,119 @@ def icon_status(size=42, kind="info"):
     p.end(); return QIcon(pm)
 
 
+def apply_color_button_style(btn, hex_color):
+    btn.setStyleSheet(f"""
+        QPushButton {{
+            background-color: {hex_color};
+            border: 2px solid {C_GREEN};
+            border-radius: 8px;
+        }}
+        QPushButton:hover {{
+            border: 2px solid {C_DARK_GREEN};
+        }}
+    """)
+
+
 # ═════════════════════════════════════════════════════════════════
-#  دیالوگ تم‌دار
+#  ComboWithArrow
+# ═════════════════════════════════════════════════════════════════
+
+class ComboWithArrow(QComboBox):
+    ARROW_AREA = 24
+
+    _ARROW_QSS = """
+        QComboBox::drop-down {
+            border: none;
+            width: 0px;
+            background: transparent;
+        }
+        QComboBox::down-arrow {
+            image: none;
+            width: 0px;
+            height: 0px;
+        }
+    """
+
+    def __init__(self, editable=False, parent=None):
+        super().__init__(parent)
+        self.setEditable(editable)
+        self.setLayoutDirection(_dir())
+        self.setCursor(Qt.PointingHandCursor)
+
+        if editable:
+            le = self.lineEdit()
+            if le is not None:
+                le.setStyleSheet(
+                    "QLineEdit { background: transparent; border: none; "
+                    "padding: 0px; }"
+                )
+                self._update_text_margins()
+                le.installEventFilter(self)
+
+    def _is_rtl(self):
+        return self.layoutDirection() == Qt.RightToLeft
+
+    def _update_text_margins(self):
+        le = self.lineEdit()
+        if le is None:
+            return
+        if self._is_rtl():
+            le.setTextMargins(self.ARROW_AREA, 0, 8, 0)
+        else:
+            le.setTextMargins(8, 0, self.ARROW_AREA, 0)
+
+    def setStyleSheet(self, qss):
+        qss = (qss or "")
+        if not self._is_rtl():
+            qss = qss.replace("padding-left: 26px;", "__PL__;")
+            qss = qss.replace("padding-right: 10px;", "padding-right: 26px;")
+            qss = qss.replace("__PL__;", "padding-left: 10px;")
+        super().setStyleSheet(qss + self._ARROW_QSS)
+
+    def eventFilter(self, obj, event):
+        le = self.lineEdit()
+        if obj is le and event.type() == QEvent.MouseButtonPress:
+            if event.button() == Qt.LeftButton:
+                try:
+                    x = event.position().x()
+                except Exception:
+                    x = event.pos().x()
+                w = le.width() or self.width()
+                if self._is_rtl():
+                    if x < self.ARROW_AREA:
+                        self.showPopup()
+                        return True
+                else:
+                    if x > w - self.ARROW_AREA:
+                        self.showPopup()
+                        return True
+        return super().eventFilter(obj, event)
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        pm = icon_chevron_down(16).pixmap(QSize(16, 16))
+        y = (self.height() - 16) // 2
+        x = 4 if self._is_rtl() else self.width() - 16 - 4
+        p.drawPixmap(x, y, pm)
+        p.end()
+
+
+# ═════════════════════════════════════════════════════════════════
+#  ThemedDialog
 # ═════════════════════════════════════════════════════════════════
 
 class ThemedDialog(QDialog):
     def __init__(self, parent, title, message, kind="info",
-                 buttons=(("تایید", True, QDialog.Accepted),)):
+                 buttons=None):
+        if buttons is None:
+            buttons = ((tr(T.ok), True, QDialog.Accepted),)
         super().__init__(parent)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
-        self.setLayoutDirection(Qt.RightToLeft)
+        self.setLayoutDirection(_dir())
         self.setFixedWidth(430)
 
         outer = QVBoxLayout(self)
@@ -885,15 +731,15 @@ class ThemedDialog(QDialog):
     @staticmethod
     def confirm(parent, title, message):
         d = ThemedDialog(parent, title, message, "question",
-                         buttons=(("بله", True, QDialog.Accepted),
-                                  ("انصراف", False, QDialog.Rejected)))
+                         buttons=((tr(T.yes), True, QDialog.Accepted),
+                                  (tr(T.cancel), False, QDialog.Rejected)))
         return d.exec() == QDialog.Accepted
 
     @staticmethod
     def confirm_delete(parent, title, message):
         d = ThemedDialog(parent, title, message, "delete",
-                         buttons=(("حذف", True, QDialog.Accepted),
-                                  ("انصراف", False, QDialog.Rejected)))
+                         buttons=((tr(T.delete), True, QDialog.Accepted),
+                                  (tr(T.cancel), False, QDialog.Rejected)))
         return d.exec() == QDialog.Accepted
 
     def showEvent(self, e):
@@ -906,7 +752,198 @@ class ThemedDialog(QDialog):
 
 
 # ═════════════════════════════════════════════════════════════════
-#  مدیریت JSON
+#  QuickAccessPicker
+# ═════════════════════════════════════════════════════════════════
+
+class QuickAccessPicker(QDialog):
+    def __init__(self, parent, all_templates, current):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self.setLayoutDirection(_dir())
+        self.setFixedWidth(440)
+
+        self._checks = {}
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 16, 16, 16)
+
+        frame = QFrame(); frame.setObjectName("dlgFrame")
+        frame.setStyleSheet(f"""
+            QFrame#dlgFrame {{
+                background-color: #FFFFFF;
+                border-radius: 14px;
+                border: 1px solid {C_BORDER};
+            }}
+        """)
+        sh = QGraphicsDropShadowEffect()
+        sh.setBlurRadius(34); sh.setOffset(0, 8)
+        sh.setColor(QColor(0, 0, 0, 85))
+        frame.setGraphicsEffect(sh)
+        outer.addWidget(frame)
+
+        v = QVBoxLayout(frame); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
+
+        tb = QFrame(); tb.setFixedHeight(42)
+        tb.setStyleSheet(f"""
+            background-color: {C_DARK_GREEN};
+            border-top-left-radius: 14px; border-top-right-radius: 14px;
+        """)
+        tb_lay = QHBoxLayout(tb)
+        tb_lay.setContentsMargins(14, 0, 8, 0); tb_lay.setSpacing(8)
+        t = QLabel(tr(T.add_to_qa))
+        tf = QFont(); tf.setPointSize(10); tf.setBold(True)
+        t.setFont(tf); t.setStyleSheet("color: white; background: transparent;")
+        tb_lay.addWidget(t); tb_lay.addStretch()
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(28, 24)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: white; background: transparent; border: none;
+                font-size: 12px; border-radius: 5px; padding-bottom: 2px;
+            }}
+            QPushButton:hover {{ background-color: {C_RED}; }}
+        """)
+        close_btn.clicked.connect(self.reject)
+        tb_lay.addWidget(close_btn)
+        v.addWidget(tb)
+
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(20, 16, 20, 16); body_lay.setSpacing(12)
+
+        hint = QLabel(tr(T.select_qa_hint))
+        hint.setStyleSheet(f"color: {C_MUTED}; background: transparent; font-size: 10px;")
+        hint.setWordWrap(True)
+        body_lay.addWidget(hint)
+
+        if not all_templates:
+            empty = QLabel(tr(T.no_templates_yet))
+            empty.setStyleSheet(
+                f"color: {C_MUTED}; background: transparent; "
+                f"font-size: 11px; padding: 20px;")
+            empty.setAlignment(Qt.AlignCenter)
+            body_lay.addWidget(empty)
+        else:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setStyleSheet(f"""
+                QScrollArea {{ background: transparent; border: none; }}
+                QScrollBar:vertical {{
+                    background: transparent; width: 6px;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: {C_BORDER}; border-radius: 3px; min-height: 24px;
+                }}
+                QScrollBar::handle:vertical:hover {{ background: {C_GREEN}; }}
+                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                    height: 0;
+                }}
+            """)
+
+            content = QWidget()
+            content.setStyleSheet("background: transparent;")
+            cl = QVBoxLayout(content)
+            cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(4)
+
+            for tpl in all_templates:
+                name = (tpl.get("name") or "").strip()
+                if not name:
+                    continue
+                cb = QCheckBox(name)
+                cb.setChecked(name in current)
+                cb.setCursor(Qt.PointingHandCursor)
+                cb.setStyleSheet(f"""
+                    QCheckBox {{
+                        color: {C_DARK_GREEN};
+                        font-size: 11px;
+                        padding: 6px 8px;
+                        border-radius: 6px;
+                    }}
+                    QCheckBox:hover {{
+                        background-color: {C_HOVER};
+                    }}
+                    QCheckBox::indicator {{
+                        width: 16px; height: 16px;
+                        border: 1.5px solid {C_BORDER};
+                        border-radius: 4px;
+                        background: #FFFFFF;
+                    }}
+                    QCheckBox::indicator:hover {{
+                        border-color: {C_GREEN};
+                    }}
+                    QCheckBox::indicator:checked {{
+                        background-color: {C_GREEN};
+                        border-color: {C_GREEN};
+                    }}
+                """)
+                cl.addWidget(cb)
+                self._checks[name] = cb
+            cl.addStretch()
+
+            scroll.setWidget(content)
+            scroll.setMinimumHeight(200)
+            scroll.setMaximumHeight(320)
+            body_lay.addWidget(scroll)
+
+        btn_row = QHBoxLayout(); btn_row.setSpacing(10)
+        btn_row.addStretch()
+
+        ok_btn = QPushButton(tr(T.save))
+        ok_btn.setCursor(Qt.PointingHandCursor)
+        ok_btn.setFixedHeight(38); ok_btn.setMinimumWidth(100)
+        ok_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C_GREEN}; color: white;
+                border: none; border-radius: 8px;
+                font-size: 11px; font-weight: bold;
+                padding: 0 18px;
+            }}
+            QPushButton:hover {{ background-color: {C_DARK_GREEN}; }}
+        """)
+        ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(ok_btn)
+
+        cancel_btn = QPushButton(tr(T.cancel))
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.setFixedHeight(38); cancel_btn.setMinimumWidth(100)
+        cancel_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {C_DARK_GREEN};
+                border: 1px solid {C_BORDER};
+                border-radius: 8px; font-size: 11px;
+                padding: 0 18px;
+            }}
+            QPushButton:hover {{
+                background-color: {C_LIGHT_GREEN};
+                border-color: {C_GREEN};
+            }}
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        body_lay.addLayout(btn_row)
+
+        v.addWidget(body)
+
+    def selected_names(self):
+        return [name for name, cb in self._checks.items() if cb.isChecked()]
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        par = self.parent()
+        if par:
+            pg = par.window().geometry()
+            self.move(pg.center().x() - self.width() // 2,
+                      pg.center().y() - self.height() // 2)
+
+
+# ═════════════════════════════════════════════════════════════════
+#  JSON management
 # ═════════════════════════════════════════════════════════════════
 
 def load_templates_raw():
@@ -917,7 +954,7 @@ def load_templates_raw():
             data = json.load(f)
         return data if isinstance(data, list) else []
     except Exception as e:
-        print(f"[خطا] خواندن JSON: {e}")
+        print(f"[error] reading JSON: {e}")
         return []
 
 
@@ -933,7 +970,7 @@ def save_templates(templates):
 
 
 # ═════════════════════════════════════════════════════════════════
-#  پردازش Word
+#  Word processing
 # ═════════════════════════════════════════════════════════════════
 
 def normalize_quotes(text):
@@ -947,34 +984,8 @@ def _get_wrapper():
     return SETTINGS.get("placeholder_wrapper", '""')
 
 
-def extract_placeholders(docx_path):
-    doc = Document(docx_path)
-    raw_text = "\n".join(p.text for p in doc.paragraphs)
-    text = normalize_quotes(raw_text)
-
-    wrapper = normalize_quotes(_get_wrapper())
-    wlen = len(wrapper)
-    if wlen == 0:
-        return {}
-
-    positions = []
-    start = 0
-    while True:
-        idx = text.find(wrapper, start)
-        if idx == -1:
-            break
-        positions.append(idx)
-        start = idx + wlen
-
-    props = {}
-    for i in range(0, len(positions) - 1, 2):
-        open_pos = positions[i]
-        close_pos = positions[i + 1]
-        term_start = open_pos + wlen
-        term = text[term_start:close_pos]
-        if term and term not in props:
-            props[term] = term_start
-    return props
+class WrapperCountError(ValueError):
+    pass
 
 
 def _run_size_pt(run):
@@ -1082,6 +1093,102 @@ def _copy_run_fonts(src_run, dst_run):
         pass
 
 
+def extract_placeholders(docx_path):
+    doc = Document(docx_path)
+    para_texts = [p.text for p in doc.paragraphs]
+
+    para_starts = []
+    offset = 0
+    for t in para_texts:
+        para_starts.append(offset)
+        offset += len(t) + 1
+
+    raw_text = "\n".join(para_texts)
+    text = normalize_quotes(raw_text)
+
+    wrapper = normalize_quotes(_get_wrapper())
+    wlen = len(wrapper)
+    if wlen == 0:
+        return {}
+
+    positions = []
+    start = 0
+    while True:
+        idx = text.find(wrapper, start)
+        if idx == -1:
+            break
+        positions.append(idx)
+        start = idx + wlen
+
+    if len(positions) % 2 != 0:
+        raise WrapperCountError(tr(T.var_count_error_detail,
+                                    w=wrapper, n=len(positions)))
+
+    props = {}
+    for i in range(0, len(positions) - 1, 2):
+        open_pos = positions[i]
+        close_pos = positions[i + 1]
+        term_start = open_pos + wlen
+        term = text[term_start:close_pos]
+        term_key = (term or "").strip()
+        if not term_key or term_key in props:
+            continue
+
+        pi = 0
+        for k in range(len(para_starts) - 1, -1, -1):
+            if para_starts[k] <= open_pos:
+                pi = k
+                break
+
+        auto_size = None
+        font_name = None
+
+        if pi < len(para_texts):
+            para_start = para_starts[pi]
+            para_text_norm = normalize_quotes(para_texts[pi])
+            local_start = open_pos - para_start
+            local_end = close_pos + wlen - para_start
+
+            if (0 <= local_start < len(para_text_norm)
+                    and local_end <= len(para_text_norm)):
+                p = doc.paragraphs[pi]
+                runs = list(p.runs)
+                if runs:
+                    parts = []
+                    char_map = []
+                    for ri, r in enumerate(runs):
+                        for ci, ch in enumerate(r.text):
+                            parts.append(ch)
+                            char_map.append((ri, ci))
+                    para_join = normalize_quotes("".join(parts))
+                    if len(para_join) == len(para_text_norm):
+                        try:
+                            auto_size = compute_auto_font(
+                                runs, char_map, para_join,
+                                local_start, local_end)
+                        except Exception:
+                            auto_size = None
+                        try:
+                            ref = _nearest_run(
+                                runs, char_map, para_join,
+                                local_start, local_end)
+                            if ref is not None:
+                                try:
+                                    if ref.font.name:
+                                        font_name = ref.font.name
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+        props[term_key] = {
+            "start": term_start,
+            "auto_size": auto_size,
+            "font_name": font_name,
+        }
+    return props
+
+
 def replace_placeholders_in_docx(src_path, dst_path, replacements, font_overrides):
     doc = Document(src_path)
     wrapper = normalize_quotes(_get_wrapper())
@@ -1113,7 +1220,7 @@ def replace_placeholders_in_docx(src_path, dst_path, replacements, font_override
             end = norm.find(wrapper, start + wlen)
             if end == -1:
                 break
-            key = norm[start + wlen:end]
+            key = norm[start + wlen:end].strip()
             if key in replacements:
                 ranges.append((start, end + wlen, key))
                 i = end + wlen
@@ -1126,7 +1233,7 @@ def replace_placeholders_in_docx(src_path, dst_path, replacements, font_override
         auto_sizes = {}
         auto_refs = {}
         for (start, end, key) in ranges:
-            override = font_overrides.get(key, (None, False, False))
+            override = font_overrides.get(key, (None, False, False, None))
             if override[0] is None:
                 auto_sizes[(start, end, key)] = compute_auto_font(
                     original_runs, char_map, norm, start, end)
@@ -1152,12 +1259,15 @@ def replace_placeholders_in_docx(src_path, dst_path, replacements, font_override
         pos = 0
         for (start, end, key) in ranges:
             emit_orig(pos, start)
-            override = font_overrides.get(key, (None, False, False))
+            override = font_overrides.get(key, (None, False, False, None))
             size_pt = auto_sizes[(start, end, key)]
             ref_run = auto_refs.get((start, end, key))
+            color_hex = override[3] if len(override) > 3 else None
             value = replacements[key]
             segments.append(
-                (value, (size_pt, override[1], override[2], ref_run), True)
+                (value,
+                 (size_pt, override[1], override[2], color_hex, ref_run),
+                 True)
             )
             pos = end
 
@@ -1172,7 +1282,7 @@ def replace_placeholders_in_docx(src_path, dst_path, replacements, font_override
                 continue
             new_run = paragraph.add_run(seg_text)
             if is_repl:
-                size_pt, bold, italic, ref_run = font_spec
+                size_pt, bold, italic, color_hex, ref_run = font_spec
                 if ref_run is not None:
                     _copy_run_fonts(ref_run, new_run)
                 if size_pt is not None:
@@ -1185,6 +1295,12 @@ def replace_placeholders_in_docx(src_path, dst_path, replacements, font_override
                     new_run.font.italic = bool(italic)
                 except Exception:
                     pass
+                if color_hex:
+                    try:
+                        h = color_hex.lstrip("#").upper()
+                        new_run.font.color.rgb = RGBColor.from_string(h)
+                    except Exception:
+                        pass
             else:
                 orig = font_spec
                 try:
@@ -1211,54 +1327,66 @@ def replace_placeholders_in_docx(src_path, dst_path, replacements, font_override
 
     doc.save(dst_path)
 
-
 # ═════════════════════════════════════════════════════════════════
-#  نوار عنوان پنجره  (دکمه‌ها سمت راست)
+#  TitleBar — buttons ALWAYS on the right, both languages
 # ═════════════════════════════════════════════════════════════════
 
 class TitleBar(QFrame):
     def __init__(self, window):
         super().__init__()
-        self._win = window; self._drag = None
-        self.setFixedHeight(46); self.setObjectName("titleBar")
+        self._win = window
+        self._drag = None
+        self.setFixedHeight(46)
+        self.setObjectName("titleBar")
 
+        # ── Force LTR layout so buttons stay on the right ──
+        # (otherwise RTL app direction would mirror them to the left)
+        self.setLayoutDirection(Qt.LeftToRight)
+        
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(8, 0, 16, 0); lay.setSpacing(10)
+        lay.setContentsMargins(16, 0, 8, 0)
+        lay.setSpacing(10)
 
-        # در RTL: ویجتی که اول اضافه شود، سمت راست قرار می‌گیرد
-        # ترتیب بصری از چپ به راست: [آیکون][عنوان][stretch][min][max][close]
-        b_cls = self._btn("✕", C_RED)
-        b_max = self._btn("☐", C_GREEN)
-        b_min = self._btn("−", C_GREEN)
-        b_min.clicked.connect(self._win.showMinimized)
-        b_max.clicked.connect(self._toggle_max)
-        b_cls.clicked.connect(self._win.close)
-
-        # ابتدا دکمه‌ها (سمت راست)
-        lay.addWidget(b_cls)
-        lay.addWidget(b_max)
-        lay.addWidget(b_min)
-        lay.addStretch()
-
-        # سپس آیکون و عنوان (سمت چپ)
+        # ── Left: icon + title ──
         ico = QLabel()
         ico.setPixmap(icon_document(20, "#FFFFFF").pixmap(QSize(20, 20)))
         ico.setStyleSheet("background: transparent;")
 
-        t = QLabel("سامانه صدور نامه")
+        t = QLabel(tr(T.app_title))
         f = QFont(); f.setPointSize(11); f.setBold(True)
-        t.setFont(f); t.setStyleSheet("color: white; background: transparent;")
+        t.setFont(f)
+        t.setStyleSheet("color: white; background: transparent;")
 
-        lay.addWidget(t)
         lay.addWidget(ico)
+        lay.addWidget(t)
+        lay.addStretch()
 
+        # ── Right: minimize / maximize / close ──
+        b_min = self._btn("−", C_GREEN)
+        b_max = self._btn("☐", C_GREEN)
+        b_cls = self._btn("✕", C_RED)
+        b_min.clicked.connect(self._win.showMinimized)
+        b_max.clicked.connect(self._toggle_max)
+        b_cls.clicked.connect(self._win.close)
+
+        lay.addWidget(b_min)
+        lay.addWidget(b_max)
+        lay.addWidget(b_cls)
+
+        self._apply_style()
+
+    def _apply_style(self):
+        r = 0 if self._win.isMaximized() else 14
         self.setStyleSheet(f"""
             QFrame#titleBar {{
                 background-color: {C_DARK_GREEN};
-                border-top-left-radius: 14px;
-                border-top-right-radius: 14px;
+                border-top-left-radius: {r}px;
+                border-top-right-radius: {r}px;
             }}
         """)
+
+    def refresh_radius(self):
+        self._apply_style()
 
     def _btn(self, txt, hover):
         b = QPushButton(txt)
@@ -1277,11 +1405,23 @@ class TitleBar(QFrame):
         self._win.showNormal() if self._win.isMaximized() else self._win.showMaximized()
 
     def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton:
-            self._drag = e.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
+        if e.button() != Qt.LeftButton:
+            return
+        try:
+            wh = self._win.windowHandle()
+            if wh is not None:
+                if self._win.isMaximized():
+                    self._win.showNormal()
+                if wh.startSystemMove():
+                    e.accept()
+                    return
+        except Exception:
+            pass
+        self._drag = e.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
 
     def mouseMoveEvent(self, e):
-        if e.buttons() & Qt.LeftButton and self._drag and not self._win.isMaximized():
+        if (e.buttons() & Qt.LeftButton and self._drag
+                and not self._win.isMaximized()):
             self._win.move(e.globalPosition().toPoint() - self._drag)
 
     def mouseReleaseEvent(self, e):
@@ -1290,9 +1430,8 @@ class TitleBar(QFrame):
     def mouseDoubleClickEvent(self, e):
         self._toggle_max()
 
-
 # ═════════════════════════════════════════════════════════════════
-#  دکمه‌ها و لیست کشویی
+#  DropdownButton / DragGhost / GripLabel / DragController
 # ═════════════════════════════════════════════════════════════════
 
 class DropdownButton(QFrame):
@@ -1321,7 +1460,7 @@ class DropdownButton(QFrame):
         ico.setStyleSheet("background: transparent;")
         ico.setAttribute(Qt.WA_TransparentForMouseEvents)
 
-        self.text = QLabel("انتخاب قالب نامه")
+        self.text = QLabel(tr(T.select_template))
         f = QFont(); f.setPointSize(11)
         self.text.setFont(f)
         self.text.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
@@ -1342,15 +1481,222 @@ class DropdownButton(QFrame):
             self.clicked.emit()
 
 
+class DragGhost(QWidget):
+    def __init__(self, text, icon, width):
+        super().__init__(
+            None,
+            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        self.setFixedSize(width, 46)
+
+        frame = QFrame(self)
+        frame.setGeometry(0, 0, width, 46)
+        frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: #FFFFFF;
+                border: 1.5px solid {C_GREEN};
+                border-radius: 8px;
+            }}
+        """)
+        lay = QHBoxLayout(frame)
+        lay.setContentsMargins(10, 0, 10, 0); lay.setSpacing(8)
+
+        ic = QLabel()
+        ic.setPixmap(icon.pixmap(QSize(20, 20)))
+        ic.setStyleSheet("background: transparent; border: none;")
+        lay.addWidget(ic)
+
+        tx = QLabel(text)
+        tx.setStyleSheet(
+            f"color: {C_DARK_GREEN}; background: transparent; "
+            f"border: none; font-size: 11px;")
+        lay.addWidget(tx)
+        lay.addStretch()
+
+        self.setWindowOpacity(0.95)
+
+
+class GripLabel(QLabel):
+    def __init__(self, controller, item, parent=None):
+        super().__init__(parent)
+        self._controller = controller
+        self._item = item
+        self._dragging = False
+        self.setPixmap(icon_grip(16).pixmap(QSize(16, 16)))
+        self.setFixedSize(18, 18)
+        self.setStyleSheet("background: transparent;")
+        self.setCursor(Qt.OpenHandCursor)
+        self.setToolTip(tr(T.drag_to_reorder))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton and self._controller:
+            self._dragging = True
+            self.setCursor(Qt.ClosedHandCursor)
+            self._controller.start(self._item, e.globalPosition().toPoint())
+
+    def mouseMoveEvent(self, e):
+        if self._dragging and self._controller:
+            self._controller.move(e.globalPosition().toPoint())
+
+    def mouseReleaseEvent(self, e):
+        if self._dragging and self._controller:
+            self._dragging = False
+            self.setCursor(Qt.OpenHandCursor)
+            self._controller.end()
+
+
+class DragController:
+    ITEM_H = 48
+
+    def __init__(self, on_reorder=None):
+        self.items = []
+        self.layout = None
+        self.on_reorder = on_reorder
+        self.drag_item = None
+        self.ghost = None
+        self.indicator = None
+        self._target_idx = None
+
+    def setup(self, items, layout):
+        self.items = items
+        self.layout = layout
+
+    def _item_name(self, item):
+        try:
+            tpl = getattr(item, "_tpl", None) or {}
+            return tpl.get("name", "") or getattr(item, "_name", "")
+        except Exception:
+            return ""
+
+    def start(self, item, global_pos):
+        self.drag_item = item
+        content = item.parentWidget()
+        if content is None:
+            return
+
+        name = self._item_name(item)
+        self.ghost = DragGhost(name, icon_document(20), item.width())
+        self.ghost.move(global_pos.x() - self.ghost.width() // 2,
+                        global_pos.y() - 23)
+        self.ghost.show()
+        self.ghost.raise_()
+
+        self.indicator = QFrame(content)
+        self.indicator.setStyleSheet(
+            f"background-color: {C_GREEN}; border: none; border-radius: 1px;")
+        self.indicator.setFixedHeight(2)
+        self.indicator.hide()
+
+        item.setStyleSheet(f"""
+            QFrame#it {{
+                background-color: {C_HOVER};
+                border-radius: 8px;
+                border: 1px dashed {C_BORDER};
+            }}
+            QFrame#qaitem {{
+                background-color: {C_HOVER};
+                border-radius: 10px;
+                border: 1px dashed {C_BORDER};
+            }}
+        """)
+
+    def move(self, global_pos):
+        if not self.drag_item or self.ghost is None:
+            return
+
+        self.ghost.move(global_pos.x() - self.ghost.width() // 2,
+                        global_pos.y() - 23)
+
+        content = self.drag_item.parentWidget()
+        if content is None:
+            return
+        local = content.mapFromGlobal(global_pos)
+        mouse_y = local.y()
+        n = len(self.items)
+        target_idx = max(0, min(n, int((mouse_y + self.ITEM_H // 2) // self.ITEM_H)))
+        self._target_idx = target_idx
+
+        y = max(0, target_idx * self.ITEM_H - 1)
+        self.indicator.setGeometry(4, y, max(10, content.width() - 8), 2)
+        self.indicator.show()
+        self.indicator.raise_()
+
+    def end(self):
+        if not self.drag_item:
+            return
+
+        target_idx = self._target_idx
+
+        if self.ghost is not None:
+            self.ghost.hide()
+            self.ghost.deleteLater()
+            self.ghost = None
+        if self.indicator is not None:
+            self.indicator.hide()
+            self.indicator.deleteLater()
+            self.indicator = None
+
+        self.drag_item.setStyleSheet(f"""
+            QFrame#it {{ background-color: transparent; border-radius: 8px; }}
+            QFrame#it:hover {{ background-color: {C_HOVER}; }}
+            QFrame#qaitem {{
+                background-color: #FFFFFF;
+                border: 1.5px solid {C_BORDER};
+                border-radius: 10px;
+            }}
+            QFrame#qaitem:hover {{
+                border-color: {C_GREEN};
+                background-color: {C_HOVER};
+            }}
+        """)
+
+        if target_idx is not None:
+            self._move_item_to(self.drag_item, target_idx)
+            if self.on_reorder:
+                self.on_reorder(list(self.items))
+
+        self.drag_item = None
+        self._target_idx = None
+
+    def _move_item_to(self, item, target_idx):
+        items = self.items
+        try:
+            cur_idx = items.index(item)
+        except ValueError:
+            return
+        if target_idx > cur_idx:
+            target_idx -= 1
+        if target_idx == cur_idx:
+            return
+        items.pop(cur_idx)
+        items.insert(target_idx, item)
+        for it in items:
+            self.layout.removeWidget(it)
+        for i, it in enumerate(items):
+            self.layout.insertWidget(i, it)
+
+
+class QuickAccessDragController(DragController):
+    ITEM_H = 44
+
+
 class PopupItem(QFrame):
     clicked = Signal()
     delete_clicked = Signal()
 
-    def __init__(self, icon: QIcon, text: str, *, is_add=False, show_delete=False):
+    def __init__(self, icon: QIcon, text: str, *, is_add=False,
+                 show_delete=False, show_grip=False,
+                 drag_controller=None):
         super().__init__()
         self.setObjectName("it")
         self.setFixedHeight(46)
         self.setCursor(Qt.PointingHandCursor)
+        self._tpl = None
+        self.grip_label = None
 
         bg       = C_LIGHT_GREEN if is_add else "transparent"
         bg_hover = C_ACCENT1 if is_add else C_HOVER
@@ -1359,11 +1705,17 @@ class PopupItem(QFrame):
             QFrame#it:hover {{ background-color: {bg_hover}; }}
         """)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 0, 10, 0); lay.setSpacing(10)
+        lay.setContentsMargins(8, 0, 10, 0); lay.setSpacing(8)
+
+        if show_grip and drag_controller is not None:
+            grip = GripLabel(drag_controller, self)
+            self.grip_label = grip
+            lay.addWidget(grip)
 
         ic = QLabel(); ic.setPixmap(icon.pixmap(QSize(26, 26)))
         ic.setStyleSheet("background: transparent;")
         ic.setAttribute(Qt.WA_TransparentForMouseEvents)
+        lay.addWidget(ic)
 
         tx = QLabel(text)
         f = QFont(); f.setPointSize(11)
@@ -1371,8 +1723,8 @@ class PopupItem(QFrame):
         tx.setFont(f)
         tx.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
         tx.setAttribute(Qt.WA_TransparentForMouseEvents)
-
-        lay.addWidget(ic); lay.addWidget(tx); lay.addStretch()
+        lay.addWidget(tx)
+        lay.addStretch()
 
         self.del_btn = None
         if show_delete:
@@ -1407,10 +1759,12 @@ class DropdownPopup(QWidget):
     add_clicked = Signal()
     template_selected = Signal(dict)
     template_deleted = Signal(dict)
+    reordered = Signal(list)
 
     ADD_ITEM_H = 46
     SEP_H      = 10
     PADDING_H  = 16
+    SEARCH_H   = 44
     TEMPLATE_H = 48
 
     def __init__(self, templates, parent=None):
@@ -1419,11 +1773,15 @@ class DropdownPopup(QWidget):
             Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setLayoutDirection(Qt.RightToLeft)
+        self.setLayoutDirection(_dir())
 
         self._templates = templates
         self._scroll = None
         self._content_h = 0
+        self._items = []
+        self._max_scroll_h = 320
+
+        self._drag = DragController(on_reorder=self._on_reorder)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1441,13 +1799,36 @@ class DropdownPopup(QWidget):
         inner = QVBoxLayout(frame)
         inner.setContentsMargins(8, 8, 8, 8); inner.setSpacing(2)
 
-        add_item = PopupItem(icon_plus_circle(28), "افزودن نامه", is_add=True)
+        add_item = PopupItem(icon_plus_circle(28), tr(T.add_letter), is_add=True)
         add_item.clicked.connect(self.add_clicked.emit)
         inner.addWidget(add_item)
 
+        search_input = QLineEdit()
+        search_input.setPlaceholderText(tr(T.search_template))
+        search_input.setFixedHeight(34)
+        search_input.setLayoutDirection(_dir())
+        search_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {C_HOVER};
+                border: 1px solid {C_BORDER};
+                border-radius: 8px;
+                padding: 0 10px;
+                color: {C_DARK_GREEN};
+                font-size: 11px;
+                margin: 4px 2px 4px 2px;
+            }}
+            QLineEdit:focus {{
+                border-color: {C_GREEN};
+                background-color: #FFFFFF;
+            }}
+        """)
+        search_input.textChanged.connect(self._on_search_changed)
+        inner.addWidget(search_input)
+        self._search = search_input
+
         if templates:
             sep = QFrame(); sep.setFixedHeight(1)
-            sep.setStyleSheet(f"background-color: {C_BORDER}; margin: 4px 10px;")
+            sep.setStyleSheet(f"background-color: {C_BORDER}; margin: 2px 10px;")
             inner.addWidget(sep)
 
             scroll = QScrollArea()
@@ -1480,11 +1861,18 @@ class DropdownPopup(QWidget):
             cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(2)
 
             for tpl in templates:
-                it = PopupItem(icon_document(22), tpl.get("name", "بدون نام"), show_delete=True)
+                it = PopupItem(
+                    icon_document(22), tpl.get("name", tr(T.untitled)),
+                    show_delete=True, show_grip=True,
+                    drag_controller=self._drag)
+                it._tpl = tpl
                 it.clicked.connect(lambda _=None, t=tpl: self.template_selected.emit(t))
                 it.delete_clicked.connect(lambda _=None, t=tpl: self.template_deleted.emit(t))
                 cl.addWidget(it)
+                self._items.append(it)
             cl.addStretch()
+
+            self._drag.setup(self._items, cl)
 
             scroll.setWidget(content)
             self._scroll = scroll
@@ -1492,11 +1880,45 @@ class DropdownPopup(QWidget):
             scroll.setFixedHeight(self._content_h)
             inner.addWidget(scroll)
 
+    def _on_search_changed(self, text):
+        text = (text or "").strip().lower()
+        is_filtering = bool(text)
+        count = 0
+        for item in self._items:
+            name = ""
+            if item._tpl is not None:
+                name = (item._tpl.get("name") or "").lower()
+            show = (not text) or (text in name)
+            item.setVisible(show)
+            if show:
+                count += 1
+            if item.grip_label is not None:
+                item.grip_label.setEnabled(not is_filtering)
+                item.grip_label.setVisible(not is_filtering)
+
+        if self._scroll is not None:
+            new_h = count * self.TEMPLATE_H + 8 if count > 0 else 0
+            self._content_h = new_h
+            final_h = min(new_h, self._max_scroll_h)
+            self._scroll.setFixedHeight(final_h)
+
+    def _on_reorder(self, items):
+        new_order = [it._tpl for it in items if it._tpl is not None]
+        if not new_order:
+            return
+        try:
+            save_templates(new_order)
+        except Exception as e:
+            print(f"[error] saving order: {e}")
+        self.reordered.emit(new_order)
+
     def constrain_height(self, available_h):
         if self._scroll is None:
             return
-        overhead = self.ADD_ITEM_H + self.SEP_H + self.PADDING_H
+        overhead = (self.ADD_ITEM_H + self.SEP_H + self.PADDING_H
+                    + self.SEARCH_H)
         max_scroll = max(60, int(available_h) - overhead)
+        self._max_scroll_h = max_scroll
         final_h = min(self._content_h, max_scroll)
         self._scroll.setFixedHeight(final_h)
 
@@ -1525,6 +1947,7 @@ class TemplateDropdown(QWidget):
         popup.add_clicked.connect(self._on_add)
         popup.template_selected.connect(self._on_select)
         popup.template_deleted.connect(self._on_delete)
+        popup.reordered.connect(self._on_reordered)
 
         popup.setFixedWidth(self.button.width())
 
@@ -1549,15 +1972,249 @@ class TemplateDropdown(QWidget):
 
     def _on_select(self, tpl):
         self._close()
-        self.button.set_text(tpl.get("name", "انتخاب قالب نامه"))
+        self.button.set_text(tpl.get("name", tr(T.select_template)))
         self.template_selected.emit(tpl)
 
     def _on_delete(self, tpl):
         self._close(); self.template_deleted.emit(tpl)
 
+    def _on_reordered(self, new_list):
+        self._templates = list(new_list)
+
 
 # ═════════════════════════════════════════════════════════════════
-#  ناحیه Drag & Drop
+#  Quick Access
+# ═════════════════════════════════════════════════════════════════
+
+class QuickAccessItem(QFrame):
+    clicked = Signal()
+    removed = Signal()
+
+    def __init__(self, name, drag_controller=None):
+        super().__init__()
+        self.setObjectName("qaitem")
+        self.setFixedHeight(40)
+        self.setCursor(Qt.PointingHandCursor)
+        self._name = name
+        self._tpl = {"name": name}
+        self.grip_label = None
+
+        self.setStyleSheet(f"""
+            QFrame#qaitem {{
+                background-color: #FFFFFF;
+                border: 1.5px solid {C_BORDER};
+                border-radius: 10px;
+            }}
+            QFrame#qaitem:hover {{
+                border-color: {C_GREEN};
+                background-color: {C_HOVER};
+            }}
+        """)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 0, 8, 0); lay.setSpacing(6)
+
+        if drag_controller is not None:
+            grip = GripLabel(drag_controller, self)
+            self.grip_label = grip
+            lay.addWidget(grip)
+
+        ic = QLabel()
+        ic.setPixmap(icon_document(16).pixmap(QSize(16, 16)))
+        ic.setStyleSheet("background: transparent;")
+        ic.setAttribute(Qt.WA_TransparentForMouseEvents)
+        lay.addWidget(ic)
+
+        tx = QLabel(name)
+        f = QFont(); f.setPointSize(10)
+        tx.setFont(f)
+        tx.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
+        tx.setAttribute(Qt.WA_TransparentForMouseEvents)
+        lay.addWidget(tx)
+        lay.addStretch()
+
+        self.del_btn = QPushButton("✕")
+        self.del_btn.setFixedSize(22, 22)
+        self.del_btn.setCursor(Qt.PointingHandCursor)
+        self.del_btn.setToolTip(tr(T.remove_from_qa))
+        self.del_btn.setVisible(False)
+        self.del_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {C_MUTED};
+                background: transparent;
+                border: none;
+                font-size: 11px;
+                border-radius: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {C_RED};
+                color: white;
+            }}
+        """)
+        self.del_btn.clicked.connect(self.removed.emit)
+        lay.addWidget(self.del_btn)
+
+    def enterEvent(self, e):
+        self.del_btn.setVisible(True)
+
+    def leaveEvent(self, e):
+        self.del_btn.setVisible(False)
+
+    def mousePressEvent(self, e):
+        if e.button() != Qt.LeftButton:
+            return
+        if self.del_btn.isVisible() and \
+                self.del_btn.geometry().contains(e.position().toPoint()):
+            return
+        self.clicked.emit()
+
+
+class QuickAccessWidget(QWidget):
+    template_selected = Signal(dict)
+    add_requested = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setStyleSheet("background: transparent;")
+        self._templates = []
+        self._quick_names = []
+
+        self._drag = QuickAccessDragController(on_reorder=self._on_reorder)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0); header.setSpacing(8)
+
+        title = QLabel(tr(T.quick_access))
+        tf = QFont(); tf.setPointSize(11); tf.setBold(True)
+        title.setFont(tf)
+        title.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
+        header.addWidget(title)
+        header.addStretch()
+
+        self.add_btn = QPushButton()
+        self.add_btn.setIcon(icon_plus_white(14))
+        self.add_btn.setIconSize(QSize(14, 14))
+        self.add_btn.setFixedSize(26, 26)
+        self.add_btn.setCursor(Qt.PointingHandCursor)
+        self.add_btn.setToolTip(tr(T.add_template_to_qa))
+        self.add_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C_GREEN};
+                border: none;
+                border-radius: 13px;
+                padding: 0px;
+            }}
+            QPushButton:hover {{ background-color: {C_DARK_GREEN}; }}
+        """)
+        self.add_btn.clicked.connect(self.add_requested.emit)
+        header.addWidget(self.add_btn)
+        lay.addLayout(header)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setStyleSheet(f"""
+            QScrollArea {{ background: transparent; border: none; }}
+            QScrollArea > QWidget > QWidget {{ background: transparent; }}
+            QScrollBar:vertical {{
+                background: transparent; width: 6px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {C_BORDER}; border-radius: 3px; min-height: 24px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {C_GREEN}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """)
+
+        self.items_container = QWidget()
+        self.items_container.setStyleSheet("background: transparent;")
+        self.items_layout = QVBoxLayout(self.items_container)
+        self.items_layout.setContentsMargins(0, 0, 4, 0)
+        self.items_layout.setSpacing(4)
+        self.items_layout.addStretch()
+
+        self.scroll.setWidget(self.items_container)
+        lay.addWidget(self.scroll)
+
+        self.empty_lbl = QLabel(tr(T.no_qa_templates))
+        self.empty_lbl.setAlignment(Qt.AlignCenter)
+        self.empty_lbl.setStyleSheet(
+            f"color: {C_MUTED}; background: transparent; "
+            f"font-size: 10px; padding: 10px;")
+        lay.addWidget(self.empty_lbl)
+
+        self._rebuild()
+
+    def set_templates(self, tpls):
+        self._templates = tpls or []
+        self._rebuild()
+
+    def set_quick_names(self, names):
+        valid = {t.get("name", "") for t in self._templates}
+        self._quick_names = [n for n in (names or []) if n in valid]
+        self._rebuild()
+
+    def _rebuild(self):
+        while self.items_layout.count() > 1:
+            item = self.items_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        tpl_map = {t.get("name", ""): t for t in self._templates}
+        shown = [n for n in self._quick_names if n in tpl_map]
+
+        if not shown:
+            self.scroll.setVisible(False)
+            self.empty_lbl.setVisible(True)
+            self.scroll.setFixedHeight(0)
+            self._drag.setup([], None)
+            return
+
+        self.empty_lbl.setVisible(False)
+        self.scroll.setVisible(True)
+
+        qa_items = []
+        for name in shown:
+            tpl = tpl_map[name]
+            it = QuickAccessItem(name, drag_controller=self._drag)
+            it.clicked.connect(lambda _=None, t=tpl: self.template_selected.emit(t))
+            it.removed.connect(lambda _=None, n=name: self._remove_name(n))
+            self.items_layout.insertWidget(self.items_layout.count() - 1, it)
+            qa_items.append(it)
+
+        self._drag.setup(qa_items, self.items_layout)
+
+        total_h = len(shown) * 44 + 4
+        self.scroll.setFixedHeight(min(total_h, 176))
+
+    def _remove_name(self, name):
+        cur = list(SETTINGS.get("quick_access", []))
+        if name in cur:
+            cur.remove(name)
+        SETTINGS["quick_access"] = cur
+        save_settings()
+        self._quick_names = [n for n in self._quick_names if n != name]
+        self._rebuild()
+
+    def _on_reorder(self, items):
+        new_order = [getattr(it, "_name", "") for it in items
+                     if getattr(it, "_name", "")]
+        if not new_order:
+            return
+        SETTINGS["quick_access"] = new_order
+        save_settings()
+        self._quick_names = new_order
+
+
+# ═════════════════════════════════════════════════════════════════
+#  DropZone
 # ═════════════════════════════════════════════════════════════════
 
 class DropZone(QFrame):
@@ -1569,7 +2226,7 @@ class DropZone(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         self.setObjectName("dropzone")
         self._file_path = None
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(180)
         self._apply_style(active=False)
 
         lay = QVBoxLayout(self)
@@ -1581,7 +2238,7 @@ class DropZone(QFrame):
         self.icon_lbl.setStyleSheet("background: transparent; border: none;")
         self.icon_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
 
-        self.text_lbl = QLabel("فایل ورد را اینجا رها کنید\nیا کلیک کنید تا از سیستم انتخاب شود")
+        self.text_lbl = QLabel(tr(T.drop_zone_hint))
         self.text_lbl.setAlignment(Qt.AlignCenter)
         f = QFont(); f.setPointSize(11)
         self.text_lbl.setFont(f)
@@ -1629,7 +2286,7 @@ class DropZone(QFrame):
         if e.button() == Qt.LeftButton:
             start_dir = str(self._file_path and Path(self._file_path).parent or DOCUMENTS_DIR)
             path, _ = QFileDialog.getOpenFileName(
-                self, "انتخاب فایل ورد", start_dir, "Word Document (*.docx)")
+                self, tr(T.select_word_file), start_dir, "Word Document (*.docx)")
             if path:
                 self._set_file(path)
 
@@ -1646,7 +2303,7 @@ class DropZone(QFrame):
 
     def reset(self):
         self._file_path = None
-        self.text_lbl.setText("فایل ورد را اینجا رها کنید\nیا کلیک کنید تا از سیستم انتخاب شود")
+        self.text_lbl.setText(tr(T.drop_zone_hint))
         f = QFont(); f.setPointSize(11)
         self.text_lbl.setFont(f)
         self.text_lbl.setStyleSheet(f"color: {C_MUTED}; background: transparent; border: none;")
@@ -1654,7 +2311,7 @@ class DropZone(QFrame):
 
 
 # ═════════════════════════════════════════════════════════════════
-#  کامپوننت‌های کوچک برای فرم متغیرها
+#  Small components
 # ═════════════════════════════════════════════════════════════════
 
 class RoundToggle(QPushButton):
@@ -1694,41 +2351,24 @@ FONT_SIZES = ["Auto", "8", "9", "10", "11", "12", "14", "16",
               "18", "20", "22", "24", "26", "28", "36", "48", "72"]
 
 
-class FontSizeCombo(QComboBox):
+class FontSizeCombo(ComboWithArrow):
     def __init__(self):
-        super().__init__()
-        self.setEditable(True)
+        super().__init__(editable=True)
         self.setFixedHeight(32)
-        self.setMinimumWidth(86)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setLayoutDirection(Qt.RightToLeft)
+        self.setMinimumWidth(100)
         self.addItems(FONT_SIZES)
         self.setCurrentText("Auto")
-        self.setToolTip("سایز فونت (Auto = هم‌اندازه‌ی متن اطراف)")
+        self.setToolTip(tr(T.font_size_tooltip))
 
-        arrow_uri = _svg_arrow_uri(C_DARK_GREEN)
         self.setStyleSheet(f"""
             QComboBox {{
                 background-color: #FFFFFF;
                 border: 1.5px solid {C_BORDER};
                 border-radius: 8px;
-                padding: 0 6px 0 26px;
                 color: {C_DARK_GREEN};
                 font-size: 11px;
             }}
             QComboBox:focus {{ border-color: {C_GREEN}; }}
-            QComboBox::drop-down {{
-                subcontrol-origin: padding;
-                subcontrol-position: center left;
-                width: 24px;
-                border: none;
-                background: transparent;
-            }}
-            QComboBox::down-arrow {{
-                image: {arrow_uri};
-                width: 12px;
-                height: 12px;
-            }}
             QComboBox QAbstractItemView {{
                 background-color: #FFFFFF;
                 border: 1px solid {C_BORDER};
@@ -1748,34 +2388,67 @@ class FontSizeCombo(QComboBox):
             }}
         """)
 
+        le = self.lineEdit()
+        if le is not None:
+            le.editingFinished.connect(self._ensure_not_empty)
+
+    def _ensure_not_empty(self):
+        le = self.lineEdit()
+        if le is None:
+            return
+        if not le.text().strip():
+            le.setText("Auto")
+
+    def eventFilter(self, obj, event):
+        if super().eventFilter(obj, event):
+            return True
+
+        le = self.lineEdit()
+        if obj is le:
+            et = event.type()
+            if et == QEvent.MouseButtonPress:
+                if le.text().strip():
+                    QTimer.singleShot(0, le.clear)
+            elif et == QEvent.FocusOut:
+                QTimer.singleShot(0, self._ensure_not_empty)
+        return False
+
 
 # ═════════════════════════════════════════════════════════════════
-#  صفحه اصلی
+#  HomePage
 # ═════════════════════════════════════════════════════════════════
 
 class HomePage(QWidget):
     settings_requested = Signal()
+    quick_template_selected = Signal(dict)
 
     def __init__(self):
         super().__init__()
         self.setStyleSheet("background: transparent;")
+        self._templates = []
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(40, 18, 40, 30)
+        outer.setContentsMargins(40, 18, 40, 24)
         outer.setSpacing(0)
 
         top_row = QHBoxLayout()
-        gear_btn = QPushButton()
-        gear_btn.setIcon(icon_gear(22))
-        gear_btn.setIconSize(QSize(22, 22))
-        gear_btn.setFixedSize(42, 42)
+        gear_btn = QPushButton(tr(T.settings_spaced))
+        gear_btn.setIcon(icon_gear(20))
+        gear_btn.setIconSize(QSize(20, 20))
+        gear_btn.setLayoutDirection(_dir())
+        gear_btn.setFixedHeight(40)
+        gear_btn.setMinimumWidth(120)
         gear_btn.setCursor(Qt.PointingHandCursor)
-        gear_btn.setToolTip("تنظیمات")
+        gear_btn.setToolTip(tr(T.settings))
         gear_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: transparent;
+                color: {C_DARK_GREEN};
                 border: 1px solid transparent;
                 border-radius: 10px;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 0 14px;
             }}
             QPushButton:hover {{
                 background-color: {C_LIGHT_GREEN};
@@ -1787,7 +2460,32 @@ class HomePage(QWidget):
         top_row.addStretch()
         outer.addLayout(top_row)
 
-        outer.addStretch()
+        outer.addSpacing(4)
+
+        # Scroll container for the whole main area (small screens)
+        main_scroll = QScrollArea()
+        main_scroll.setWidgetResizable(True)
+        main_scroll.setFrameShape(QFrame.NoFrame)
+        main_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        main_scroll.setStyleSheet(f"""
+            QScrollArea {{ background: transparent; border: none; }}
+            QScrollBar:vertical {{
+                background: transparent; width: 6px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {C_BORDER}; border-radius: 3px; min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {C_GREEN}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """)
+
+        main_content = QWidget()
+        main_content.setStyleSheet("background: transparent;")
+        mc_lay = QVBoxLayout(main_content)
+        mc_lay.setContentsMargins(0, 0, 0, 0)
+        mc_lay.setSpacing(18)
 
         card = QWidget(); card.setStyleSheet("background: transparent;")
         card.setFixedWidth(440)
@@ -1795,11 +2493,11 @@ class HomePage(QWidget):
         cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(8)
 
         big = QLabel()
-        big.setPixmap(icon_document_big(88).pixmap(QSize(88, 88)))
+        big.setPixmap(icon_document_big(72).pixmap(QSize(72, 72)))
         big.setAlignment(Qt.AlignCenter)
         big.setStyleSheet("background: transparent;")
 
-        title = QLabel("صدور نامه")
+        title = QLabel(tr(T.issue_letter))
         tf = QFont(); tf.setPointSize(22); tf.setBold(True)
         title.setFont(tf); title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
@@ -1807,15 +2505,52 @@ class HomePage(QWidget):
         self.dropdown = TemplateDropdown()
 
         cl.addWidget(big, 0, Qt.AlignHCenter)
-        cl.addWidget(title); cl.addSpacing(18); cl.addWidget(self.dropdown)
+        cl.addWidget(title); cl.addSpacing(12); cl.addWidget(self.dropdown)
 
         center = QHBoxLayout()
         center.addStretch(); center.addWidget(card); center.addStretch()
-        outer.addLayout(center); outer.addStretch()
+        mc_lay.addLayout(center)
+
+        qa_wrap = QWidget()
+        qa_wrap.setStyleSheet("background: transparent;")
+        qa_wrap.setFixedWidth(440)
+        qa_lay = QVBoxLayout(qa_wrap)
+        qa_lay.setContentsMargins(0, 0, 0, 0)
+
+        self.quick_access = QuickAccessWidget()
+        self.quick_access.template_selected.connect(self.quick_template_selected.emit)
+        self.quick_access.add_requested.connect(self._on_qa_add)
+        qa_lay.addWidget(self.quick_access)
+
+        center_qa = QHBoxLayout()
+        center_qa.addStretch(); center_qa.addWidget(qa_wrap); center_qa.addStretch()
+        mc_lay.addLayout(center_qa)
+
+        mc_lay.addStretch(1)
+
+        main_scroll.setWidget(main_content)
+        outer.addWidget(main_scroll, 1)
+
+    def set_templates(self, tpls):
+        self._templates = tpls or []
+        self.dropdown.set_templates(self._templates)
+        self.quick_access.set_templates(self._templates)
+        self.quick_access.set_quick_names(SETTINGS.get("quick_access", []))
+
+    def _on_qa_add(self):
+        valid_names = {t.get("name", "") for t in self._templates}
+        current = [n for n in SETTINGS.get("quick_access", [])
+                   if n in valid_names]
+        dlg = QuickAccessPicker(self, self._templates, current)
+        if dlg.exec() == QDialog.Accepted:
+            new_names = dlg.selected_names()
+            SETTINGS["quick_access"] = new_names
+            save_settings()
+            self.quick_access.set_quick_names(new_names)
 
 
 # ═════════════════════════════════════════════════════════════════
-#  صفحه افزودن نامه
+#  AddLetterPage
 # ═════════════════════════════════════════════════════════════════
 
 class AddLetterPage(QWidget):
@@ -1826,16 +2561,21 @@ class AddLetterPage(QWidget):
         super().__init__()
         self.setStyleSheet("background: transparent;")
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(40, 22, 40, 30); lay.setSpacing(14)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
-        header = QHBoxLayout()
-        title = QLabel("افزودن نامه جدید")
+        # ─ Header (static) ─
+        header_wrap = QWidget()
+        header_wrap.setStyleSheet("background: transparent;")
+        hw_lay = QHBoxLayout(header_wrap)
+        hw_lay.setContentsMargins(40, 22, 40, 14); hw_lay.setSpacing(10)
+
+        title = QLabel(tr(T.add_new_letter))
         tf = QFont(); tf.setPointSize(15); tf.setBold(True)
         title.setFont(tf)
         title.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
 
-        back_btn = QPushButton("  بازگشت")
+        back_btn = QPushButton(tr(T.back_spaced))
         back_btn.setIcon(icon_arrow_left(16)); back_btn.setIconSize(QSize(16, 16))
         back_btn.setCursor(Qt.PointingHandCursor); back_btn.setFixedHeight(34)
         back_btn.setStyleSheet(f"""
@@ -1851,18 +2591,42 @@ class AddLetterPage(QWidget):
         """)
         back_btn.clicked.connect(self.back_requested.emit)
 
-        header.addWidget(title); header.addStretch(); header.addWidget(back_btn)
-        lay.addLayout(header)
+        hw_lay.addWidget(title); hw_lay.addStretch(); hw_lay.addWidget(back_btn)
+        root.addWidget(header_wrap)
+
+        # ─ Scrollable body ─
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet(f"""
+            QScrollArea {{ background: transparent; border: none; }}
+            QScrollBar:vertical {{
+                background: transparent; width: 8px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {C_BORDER}; border-radius: 4px; min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {C_GREEN}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """)
+
+        body = QWidget()
+        body.setStyleSheet("background: transparent;")
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(40, 0, 40, 20)
+        bl.setSpacing(14)
 
         nf = QFont(); nf.setPointSize(10); nf.setBold(True)
 
-        name_lbl = QLabel("نام نامه")
+        name_lbl = QLabel(tr(T.letter_name))
         name_lbl.setFont(nf)
         name_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
-        lay.addWidget(name_lbl)
+        bl.addWidget(name_lbl)
 
         self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText("مثلاً: نامه قبولی مقاله")
+        self.name_input.setPlaceholderText(tr(T.ph_letter_name))
         self.name_input.setFixedHeight(44)
         self.name_input.setStyleSheet(f"""
             QLineEdit {{
@@ -1875,17 +2639,28 @@ class AddLetterPage(QWidget):
             }}
             QLineEdit:focus {{ border-color: {C_GREEN}; }}
         """)
-        lay.addWidget(self.name_input); lay.addSpacing(4)
+        bl.addWidget(self.name_input)
 
-        drop_lbl = QLabel("فایل قالب ورد")
+        drop_lbl = QLabel(tr(T.word_template_file))
         drop_lbl.setFont(nf)
         drop_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
-        lay.addWidget(drop_lbl)
+        bl.addWidget(drop_lbl)
 
         self.drop_zone = DropZone()
-        lay.addWidget(self.drop_zone, 1)
+        bl.addWidget(self.drop_zone)
 
-        self.confirm_btn = QPushButton("تایید و ذخیره")
+        bl.addStretch(1)
+
+        scroll.setWidget(body)
+        root.addWidget(scroll, 1)
+
+        # ─ Footer (static) ─
+        footer_wrap = QWidget()
+        footer_wrap.setStyleSheet("background: transparent;")
+        fw_lay = QVBoxLayout(footer_wrap)
+        fw_lay.setContentsMargins(40, 8, 40, 22)
+
+        self.confirm_btn = QPushButton(tr(T.confirm_save))
         self.confirm_btn.setCursor(Qt.PointingHandCursor)
         self.confirm_btn.setFixedHeight(48)
         self.confirm_btn.setStyleSheet(f"""
@@ -1897,64 +2672,81 @@ class AddLetterPage(QWidget):
             QPushButton:hover {{ background-color: {C_DARK_GREEN}; }}
         """)
         self.confirm_btn.clicked.connect(self._on_confirm)
-        lay.addWidget(self.confirm_btn)
+        fw_lay.addWidget(self.confirm_btn)
+        root.addWidget(footer_wrap)
 
     def reset(self):
         self.name_input.clear(); self.drop_zone.reset()
 
     def _on_confirm(self):
         if not HAS_DOCX:
-            ThemedDialog.error(self, "کتابخانه ناقص",
-                               "python-docx نصب نیست.\n\npip install python-docx")
+            ThemedDialog.error(self, tr(T.missing_library), tr(T.no_docx))
             return
 
         name = self.name_input.text().strip()
         file_path = self.drop_zone.file_path()
 
         if not name:
-            ThemedDialog.warning(self, "خطا", "لطفاً نام نامه را وارد کنید.")
+            ThemedDialog.warning(self, tr(T.error), tr(T.err_empty_name))
             self.name_input.setFocus(); return
         if not file_path:
-            ThemedDialog.warning(self, "خطا", "لطفاً فایل ورد را انتخاب یا رها کنید.")
+            ThemedDialog.warning(self, tr(T.error), tr(T.err_empty_file))
             return
 
         existing = load_templates_raw()
         if any(t.get("name") == name for t in existing):
-            ThemedDialog.warning(self, "خطا", f"نام «{name}» قبلاً ثبت شده است.")
+            ThemedDialog.warning(self, tr(T.error),
+                                 tr(T.err_name_exists, name=name))
             return
 
+        dst = None
         try:
             WORDS_DIR.mkdir(parents=True, exist_ok=True)
-            src = Path(file_path); dst = WORDS_DIR / src.name
+            src = Path(file_path)
+            dst = WORDS_DIR / src.name
             counter = 1
             while dst.exists():
                 dst = WORDS_DIR / f"{src.stem}_{counter}{src.suffix}"
                 counter += 1
             shutil.copy2(str(src), str(dst))
 
-            props = extract_placeholders(str(dst))
+            try:
+                props = extract_placeholders(str(dst))
+            except WrapperCountError as we:
+                try:
+                    dst.unlink()
+                except Exception:
+                    pass
+                ThemedDialog.error(self, tr(T.err_wrapper_count), str(we))
+                return
 
             new_obj = {"name": name, "address": str(dst), "Properties": props}
             existing.append(new_obj)
             save_templates(existing)
 
             if props:
-                ThemedDialog.info(self, "ذخیره شد",
-                                  f"نامه «{name}» با {len(props)} متغیر ذخیره شد.")
+                ThemedDialog.info(self, tr(T.saved),
+                                  tr(T.saved_with_n, name=name, n=len(props)))
             else:
                 ThemedDialog.info(
-                    self, "ذخیره شد",
-                    f"نامه «{name}» ذخیره شد.\n"
-                    f"توجه: هیچ متغیری با الگوی «{_get_wrapper()}» پیدا نشد.")
+                    self, tr(T.saved),
+                    f"{tr(T.saved_with_n, name=name, n=0)}\n"
+                    f"{tr(T.saved_no_vars, w=_get_wrapper())}")
 
             self.reset(); self.saved.emit()
         except Exception as ex:
-            ThemedDialog.error(self, "خطا", f"مشکلی رخ داد:\n{ex}")
-            print("[خطا]", ex)
+            if dst is not None and dst.exists():
+                try:
+                    dst.unlink()
+                except Exception:
+                    pass
+            ThemedDialog.error(self, tr(T.error),
+                               tr(T.err_generic, err=ex))
+            print("[error]", ex)
 
 
 # ═════════════════════════════════════════════════════════════════
-#  صفحه ویرایش نامه
+#  EditLetterPage — header static, everything else scrolls
 # ═════════════════════════════════════════════════════════════════
 
 class EditLetterPage(QWidget):
@@ -1966,16 +2758,21 @@ class EditLetterPage(QWidget):
         self._template = None
         self._fields = {}
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(40, 22, 40, 30); lay.setSpacing(14)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
-        header = QHBoxLayout()
-        self.title_lbl = QLabel("صدور نامه")
+        # ─ Header (static) ─
+        header_wrap = QWidget()
+        header_wrap.setStyleSheet("background: transparent;")
+        hw_lay = QHBoxLayout(header_wrap)
+        hw_lay.setContentsMargins(40, 22, 40, 14); hw_lay.setSpacing(10)
+
+        self.title_lbl = QLabel(tr(T.issue_letter))
         tf = QFont(); tf.setPointSize(15); tf.setBold(True)
         self.title_lbl.setFont(tf)
         self.title_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
 
-        back_btn = QPushButton("  بازگشت")
+        back_btn = QPushButton(tr(T.back_spaced))
         back_btn.setIcon(icon_arrow_left(16)); back_btn.setIconSize(QSize(16, 16))
         back_btn.setCursor(Qt.PointingHandCursor); back_btn.setFixedHeight(34)
         back_btn.setStyleSheet(f"""
@@ -1991,18 +2788,42 @@ class EditLetterPage(QWidget):
         """)
         back_btn.clicked.connect(self.back_requested.emit)
 
-        header.addWidget(self.title_lbl); header.addStretch(); header.addWidget(back_btn)
-        lay.addLayout(header)
+        hw_lay.addWidget(self.title_lbl); hw_lay.addStretch(); hw_lay.addWidget(back_btn)
+        root.addWidget(header_wrap)
+
+        # ─ Everything else in a scroll ─
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setStyleSheet(f"""
+            QScrollArea {{ background: transparent; border: none; }}
+            QScrollBar:vertical {{
+                background: transparent; width: 8px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {C_BORDER}; border-radius: 4px; min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {C_GREEN}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """)
+
+        self.scroll_body = QWidget()
+        self.scroll_body.setStyleSheet("background: transparent;")
+        sb = QVBoxLayout(self.scroll_body)
+        sb.setContentsMargins(40, 0, 40, 20)
+        sb.setSpacing(14)
 
         nf = QFont(); nf.setPointSize(10); nf.setBold(True)
 
-        fn_lbl = QLabel("نام فایل خروجی")
+        fn_lbl = QLabel(tr(T.output_filename))
         fn_lbl.setFont(nf)
         fn_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
-        lay.addWidget(fn_lbl)
+        sb.addWidget(fn_lbl)
 
         self.filename_input = QLineEdit()
-        self.filename_input.setPlaceholderText("مثلاً: نامه_قبولی_مقاله")
+        self.filename_input.setPlaceholderText(tr(T.ph_filename))
         self.filename_input.setFixedHeight(44)
         self.filename_input.setStyleSheet(f"""
             QLineEdit {{
@@ -2015,42 +2836,33 @@ class EditLetterPage(QWidget):
             }}
             QLineEdit:focus {{ border-color: {C_GREEN}; }}
         """)
-        lay.addWidget(self.filename_input)
+        sb.addWidget(self.filename_input)
 
-        vars_lbl = QLabel("مقادیر متغیرها")
+        vars_lbl = QLabel(tr(T.variable_values))
         vars_lbl.setFont(nf)
         vars_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
-        lay.addWidget(vars_lbl)
-
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.NoFrame)
-        self.scroll.setStyleSheet(f"""
-            QScrollArea {{ background: transparent; border: none; }}
-            QScrollBar:vertical {{
-                background: transparent; width: 8px; margin: 0;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {C_BORDER}; border-radius: 4px; min-height: 30px;
-            }}
-            QScrollBar::handle:vertical:hover {{ background: {C_GREEN}; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0;
-            }}
-        """)
+        sb.addWidget(vars_lbl)
 
         self.fields_container = QWidget()
         self.fields_container.setStyleSheet("background: transparent;")
         self.fields_layout = QVBoxLayout(self.fields_container)
-        self.fields_layout.setContentsMargins(0, 0, 8, 0)
+        self.fields_layout.setContentsMargins(0, 0, 0, 0)
         self.fields_layout.setSpacing(12)
         self.fields_layout.addStretch()
 
-        self.scroll.setWidget(self.fields_container)
-        lay.addWidget(self.scroll, 1)
+        sb.addWidget(self.fields_container)
+        sb.addStretch(1)
 
-        btn_row = QHBoxLayout()
-        self.confirm_btn = QPushButton("تایید و صدور نامه")
+        self.scroll.setWidget(self.scroll_body)
+        root.addWidget(self.scroll, 1)
+
+        # ─ Footer (static): confirm button ─
+        footer_wrap = QWidget()
+        footer_wrap.setStyleSheet("background: transparent;")
+        fw_lay = QHBoxLayout(footer_wrap)
+        fw_lay.setContentsMargins(40, 8, 40, 22)
+
+        self.confirm_btn = QPushButton(tr(T.confirm_issue))
         self.confirm_btn.setCursor(Qt.PointingHandCursor)
         self.confirm_btn.setFixedHeight(46)
         self.confirm_btn.setMinimumWidth(200)
@@ -2064,13 +2876,13 @@ class EditLetterPage(QWidget):
             QPushButton:hover {{ background-color: {C_DARK_GREEN}; }}
         """)
         self.confirm_btn.clicked.connect(self._on_confirm)
-        btn_row.addWidget(self.confirm_btn)   # در RTL = سمت راست
-        btn_row.addStretch()
-        lay.addLayout(btn_row)
+        fw_lay.addWidget(self.confirm_btn)
+        fw_lay.addStretch()
+        root.addWidget(footer_wrap)
 
     def load_template(self, tpl):
         self._template = tpl
-        self.title_lbl.setText(f"صدور: {tpl.get('name', '')}")
+        self.title_lbl.setText(tr(T.issue_named, name=tpl.get('name', '')))
         self.filename_input.setText(tpl.get("name", ""))
 
         self._fields.clear()
@@ -2081,19 +2893,68 @@ class EditLetterPage(QWidget):
                 w.deleteLater()
 
         props = tpl.get("Properties", {})
-        if not props:
-            empty = QLabel("این قالب متغیری ندارد.")
+
+        normalized = {}
+        for k, v in props.items():
+            k2 = (k or "").strip()
+            if not k2:
+                continue
+            if isinstance(v, dict):
+                try:
+                    start = int(v.get("start", 0))
+                except Exception:
+                    start = 0
+                normalized[k2] = {
+                    "start": start,
+                    "auto_size": v.get("auto_size"),
+                    "font_name": v.get("font_name"),
+                }
+            else:
+                try:
+                    start = int(v) if v is not None else 0
+                except Exception:
+                    start = 0
+                normalized[k2] = {
+                    "start": start,
+                    "auto_size": None,
+                    "font_name": None,
+                }
+
+        if not normalized:
+            empty = QLabel(tr(T.no_variables))
             empty.setStyleSheet(f"color: {C_MUTED}; background: transparent; padding: 8px;")
             empty.setFont(QFont("", 10))
             self.fields_layout.insertWidget(0, empty)
             return
 
-        sorted_items = sorted(props.items(), key=lambda kv: kv[1])
-        for idx, (key, _start) in enumerate(sorted_items):
-            box = self._build_field(key, show_labels=(idx == 0))
+        sorted_items = sorted(normalized.items(),
+                              key=lambda kv: kv[1]["start"])
+        for idx, (key, info) in enumerate(sorted_items):
+            box = self._build_field(
+                key,
+                show_labels=(idx == 0),
+                default_size=info.get("auto_size"),
+            )
             self.fields_layout.insertWidget(self.fields_layout.count() - 1, box)
 
-    def _build_field(self, key, show_labels=False):
+    def _pick_color(self, key):
+        widgets = self._fields.get(key)
+        if not widgets:
+            return
+        btn = widgets.get("color")
+        if btn is None:
+            return
+        cur = btn.property("color") or "#000000"
+        dlg = QColorDialog(QColor(cur), self)
+        dlg.setWindowTitle(tr(T.pick_color))
+        if dlg.exec():
+            col = dlg.currentColor()
+            if col.isValid():
+                hexc = col.name()
+                btn.setProperty("color", hexc)
+                apply_color_button_style(btn, hexc)
+
+    def _build_field(self, key, show_labels=False, default_size=None):
         box = QWidget()
         box.setStyleSheet("background: transparent;")
         bl = QVBoxLayout(box)
@@ -2102,59 +2963,85 @@ class EditLetterPage(QWidget):
         top = QHBoxLayout()
         top.setSpacing(8)
 
-        lbl = QLabel(key)
+        lbl = QLabel(key.strip())
         lf = QFont(); lf.setPointSize(10); lf.setBold(True)
         lbl.setFont(lf)
         lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
         top.addWidget(lbl)
         top.addStretch()
 
-        # ─ برچسب «سایز فونت» + کمبو (فقط فیلد اول) ─
         if show_labels:
-            size_lbl = QLabel("سایز فونت")
+            size_lbl = QLabel(tr(T.font_size))
             size_lbl.setStyleSheet(
                 f"color: {C_MUTED}; background: transparent; font-size: 10px;")
             top.addWidget(size_lbl)
 
         size_combo = FontSizeCombo()
+        if default_size is not None:
+            try:
+                if isinstance(default_size, (int, float)):
+                    size_combo.setCurrentText(f"{default_size:g}")
+                else:
+                    size_combo.setCurrentText(str(default_size))
+            except Exception:
+                pass
         top.addWidget(size_combo)
 
-        # ─ گروه بولد ─
+        # Bold
         bold_wrap = QWidget()
         bold_wrap.setStyleSheet("background: transparent;")
         bold_lay = QHBoxLayout(bold_wrap)
         bold_lay.setContentsMargins(0, 0, 0, 0); bold_lay.setSpacing(6)
-        bold_btn = RoundToggle("B", "بولد", bold=True)
-        bold_lay.addWidget(bold_btn)
+        bold_btn = RoundToggle("B", tr(T.bold), bold=True)
         if show_labels:
-            bold_lbl = QLabel("بولد")
+            bold_lbl = QLabel(tr(T.bold))
             bold_lbl.setStyleSheet(
                 f"color: {C_MUTED}; background: transparent; font-size: 10px;")
             bold_lbl.setCursor(Qt.PointingHandCursor)
             bold_lbl.mousePressEvent = lambda _e, b=bold_btn: b.toggle()
             bold_lay.addWidget(bold_lbl)
+        bold_lay.addWidget(bold_btn)
         top.addWidget(bold_wrap)
 
-        # ─ گروه ایتالیک ─
+        # Italic
         ital_wrap = QWidget()
         ital_wrap.setStyleSheet("background: transparent;")
         ital_lay = QHBoxLayout(ital_wrap)
         ital_lay.setContentsMargins(0, 0, 0, 0); ital_lay.setSpacing(6)
-        italic_btn = RoundToggle("I", "ایتالیک", italic=True)
-        ital_lay.addWidget(italic_btn)
+        italic_btn = RoundToggle("I", tr(T.italic), italic=True)
         if show_labels:
-            italic_lbl = QLabel("ایتالیک")
+            italic_lbl = QLabel(tr(T.italic))
             italic_lbl.setStyleSheet(
                 f"color: {C_MUTED}; background: transparent; font-size: 10px;")
             italic_lbl.setCursor(Qt.PointingHandCursor)
             italic_lbl.mousePressEvent = lambda _e, b=italic_btn: b.toggle()
             ital_lay.addWidget(italic_lbl)
+        ital_lay.addWidget(italic_btn)
         top.addWidget(ital_wrap)
+
+        # Color
+        color_wrap = QWidget()
+        color_wrap.setStyleSheet("background: transparent;")
+        color_lay = QHBoxLayout(color_wrap)
+        color_lay.setContentsMargins(0, 0, 0, 0); color_lay.setSpacing(6)
+        if show_labels:
+            color_lbl = QLabel(tr(T.color))
+            color_lbl.setStyleSheet(
+                f"color: {C_MUTED}; background: transparent; font-size: 10px;")
+            color_lay.addWidget(color_lbl)
+        color_btn = QPushButton()
+        color_btn.setFixedSize(16, 16)
+        color_btn.setCursor(Qt.PointingHandCursor)
+        color_btn.setToolTip(tr(T.color_tooltip))
+        color_btn.setProperty("color", "#000000")
+        apply_color_button_style(color_btn, "#000000")
+        color_btn.clicked.connect(lambda _=False, k=key: self._pick_color(k))
+        color_lay.addWidget(color_btn)
+        top.addWidget(color_wrap)
 
         bl.addLayout(top)
 
         inp = QLineEdit()
-        inp.setPlaceholderText(f"مقدار «{key}»")
         inp.setFixedHeight(42)
         inp.setStyleSheet(f"""
             QLineEdit {{
@@ -2174,31 +3061,28 @@ class EditLetterPage(QWidget):
             "size": size_combo,
             "bold": bold_btn,
             "italic": italic_btn,
+            "color": color_btn,
         }
         return box
 
     def _on_confirm(self):
         if not HAS_DOCX:
-            ThemedDialog.error(self, "کتابخانه ناقص",
-                               "python-docx نصب نیست.\n\npip install python-docx")
+            ThemedDialog.error(self, tr(T.missing_library), tr(T.no_docx))
             return
         if not self._template:
             return
 
         filename = self.filename_input.text().strip()
         if not filename:
-            ThemedDialog.warning(self, "خطا", "لطفاً نام فایل خروجی را وارد کنید.")
+            ThemedDialog.warning(self, tr(T.error), tr(T.err_empty_filename))
             return
 
-        # ─ الزام پر بودن حداقل یک فیلد متغیر ─
         if self._fields:
             any_filled = any(
                 w["input"].text().strip() for w in self._fields.values()
             )
             if not any_filled:
-                ThemedDialog.warning(
-                    self, "خطا",
-                    "لطفاً مقدار حداقل یکی از متغیرها را وارد کنید.")
+                ThemedDialog.warning(self, tr(T.error), tr(T.err_fill_one))
                 return
 
         for ch in '<>:"/\\|?*':
@@ -2211,19 +3095,21 @@ class EditLetterPage(QWidget):
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            ThemedDialog.error(self, "خطا", f"ساخت مسیر خروجی ناموفق:\n{e}")
+            ThemedDialog.error(self, tr(T.error),
+                               tr(T.err_output_dir_create, err=e))
             return
 
         out_path = output_dir / filename
         src = Path(self._template.get("address", ""))
         if not src.exists():
-            ThemedDialog.error(self, "خطا", f"فایل قالب پیدا نشد:\n{src}")
+            ThemedDialog.error(self, tr(T.error),
+                               tr(T.err_template_not_found, path=src))
             return
 
         if out_path.exists():
             ok = ThemedDialog.confirm(
-                self, "فایل موجود است",
-                f"فایل «{filename}» در مسیر خروجی وجود دارد.\nآن را بازنویسی کنیم؟")
+                self, tr(T.file_exists),
+                tr(T.file_overwrite, f=filename))
             if not ok: return
 
         replacements = {}
@@ -2241,22 +3127,23 @@ class EditLetterPage(QWidget):
                     size_val = None
             bold_val = widgets["bold"].isChecked()
             italic_val = widgets["italic"].isChecked()
-            font_overrides[key] = (size_val, bold_val, italic_val)
+            color_val = widgets["color"].property("color") or "#000000"
+            font_overrides[key] = (size_val, bold_val, italic_val, color_val)
 
         try:
             replace_placeholders_in_docx(
                 str(src), str(out_path), replacements, font_overrides)
             ThemedDialog.info(
-                self, "صادر شد",
-                f"نامه با موفقیت ذخیره شد:\n{out_path}")
+                self, tr(T.issued),
+                tr(T.issued_ok, path=out_path))
             self.back_requested.emit()
         except Exception as ex:
-            ThemedDialog.error(self, "خطا", f"مشکلی در صدور نامه رخ داد:\n{ex}")
-            print("[خطا]", ex)
+            ThemedDialog.error(self, tr(T.error), tr(T.err_issue, err=ex))
+            print("[error]", ex)
 
 
 # ═════════════════════════════════════════════════════════════════
-#  صفحه تنظیمات
+#  SettingsPage — no theme option
 # ═════════════════════════════════════════════════════════════════
 
 class SettingsPage(QWidget):
@@ -2264,9 +3151,13 @@ class SettingsPage(QWidget):
     saved = Signal()
 
     IN_H      = 36
-    THEME_W   = 220
-    OUTPUT_W  = 380
-    WRAPPER_W = 180
+    FIELD_W   = 380
+    BROWSE_W  = 80
+
+    LANGUAGES = [
+        ("fa", "فارسی"),
+        ("en", "English"),
+    ]
 
     def __init__(self):
         super().__init__()
@@ -2276,12 +3167,12 @@ class SettingsPage(QWidget):
         lay.setContentsMargins(40, 22, 40, 30); lay.setSpacing(10)
 
         header = QHBoxLayout()
-        title = QLabel("تنظیمات")
+        title = QLabel(tr(T.settings))
         tf = QFont(); tf.setPointSize(15); tf.setBold(True)
         title.setFont(tf)
         title.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
 
-        back_btn = QPushButton("  بازگشت")
+        back_btn = QPushButton(tr(T.back_spaced))
         back_btn.setIcon(icon_arrow_left(16)); back_btn.setIconSize(QSize(16, 16))
         back_btn.setCursor(Qt.PointingHandCursor); back_btn.setFixedHeight(34)
         back_btn.setStyleSheet(f"""
@@ -2302,84 +3193,44 @@ class SettingsPage(QWidget):
 
         lf = QFont(); lf.setPointSize(10); lf.setBold(True)
 
-        # ─ تم ─
-        theme_lbl = QLabel("تم برنامه")
-        theme_lbl.setFont(lf)
-        theme_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
-        lay.addWidget(theme_lbl)
+        # Language
+        lang_lbl = QLabel(tr(T.app_language))
+        lang_lbl.setFont(lf)
+        lang_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
+        lay.addWidget(lang_lbl)
 
-        self.theme_combo = QComboBox()
-        self.theme_combo.setFixedHeight(self.IN_H)
-        self.theme_combo.setFixedWidth(self.THEME_W)
-        self.theme_combo.setCursor(Qt.PointingHandCursor)
-        self.theme_combo.setLayoutDirection(Qt.RightToLeft)
-        for key, t in THEMES.items():
-            self.theme_combo.addItem(t["label"], key)
-        cur = SETTINGS.get("theme", "green")
-        idx = self.theme_combo.findData(cur)
-        if idx >= 0:
-            self.theme_combo.setCurrentIndex(idx)
+        self.lang_combo = ComboWithArrow(editable=False)
+        self.lang_combo.setFixedHeight(self.IN_H)
+        self.lang_combo.setFixedWidth(self.FIELD_W)
+        for code, label in self.LANGUAGES:
+            self.lang_combo.addItem(label, code)
+        cur_lang = SETTINGS.get("language", "fa")
+        idx_lang = self.lang_combo.findData(cur_lang)
+        if idx_lang >= 0:
+            self.lang_combo.setCurrentIndex(idx_lang)
+        self._style_combo(self.lang_combo)
 
-        arrow_uri = _svg_arrow_uri(C_DARK_GREEN)
-        self.theme_combo.setStyleSheet(f"""
-            QComboBox {{
-                background-color: #FFFFFF;
-                border: 1.5px solid {C_BORDER};
-                border-radius: 8px;
-                padding: 0 6px 0 26px;
-                color: {C_DARK_GREEN};
-                font-size: 11px;
-            }}
-            QComboBox:focus, QComboBox:on {{ border-color: {C_GREEN}; }}
-            QComboBox::drop-down {{
-                subcontrol-origin: padding;
-                subcontrol-position: center left;
-                width: 24px;
-                border: none;
-                background: transparent;
-            }}
-            QComboBox::down-arrow {{
-                image: {arrow_uri};
-                width: 12px;
-                height: 12px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #FFFFFF;
-                border: 1px solid {C_BORDER};
-                border-radius: 8px;
-                padding: 4px;
-                outline: none;
-                color: {C_DARK_GREEN};
-                selection-background-color: {C_LIGHT_GREEN};
-                selection-color: {C_DARK_GREEN};
-            }}
-            QComboBox QAbstractItemView::item {{
-                padding: 6px; border-radius: 6px; min-height: 20px;
-            }}
-            QComboBox QAbstractItemView::item:hover {{
-                background-color: {C_HOVER};
-            }}
-        """)
+        lang_row = QHBoxLayout()
+        lang_row.setContentsMargins(0, 0, 0, 0)
+        lang_row.addWidget(self.lang_combo)
+        lang_row.addStretch()
+        lay.addLayout(lang_row); lay.addSpacing(2)
 
-        theme_row = QHBoxLayout()
-        theme_row.setContentsMargins(0, 0, 0, 0)
-        theme_row.addWidget(self.theme_combo)
-        theme_row.addStretch()
-        lay.addLayout(theme_row); lay.addSpacing(2)
-
-        # ─ مسیر خروجی ─
-        out_lbl = QLabel("مسیر خروجی نامه‌ها")
+        # Output dir
+        out_lbl = QLabel(tr(T.output_path))
         out_lbl.setFont(lf)
         out_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
         lay.addWidget(out_lbl)
 
-        out_row = QHBoxLayout(); out_row.setSpacing(8)
-        out_row.setContentsMargins(0, 0, 0, 0)
+        out_container = QWidget()
+        out_container.setStyleSheet("background: transparent;")
+        out_container.setFixedWidth(self.FIELD_W)
+        out_row = QHBoxLayout(out_container)
+        out_row.setContentsMargins(0, 0, 0, 0); out_row.setSpacing(8)
 
         self.output_input = QLineEdit()
         self.output_input.setText(SETTINGS.get("output_dir", str(Path.home() / "Desktop")))
         self.output_input.setFixedHeight(self.IN_H)
-        self.output_input.setFixedWidth(self.OUTPUT_W)
         self.output_input.setStyleSheet(f"""
             QLineEdit {{
                 background-color: #FFFFFF;
@@ -2391,11 +3242,11 @@ class SettingsPage(QWidget):
             }}
             QLineEdit:focus {{ border-color: {C_GREEN}; }}
         """)
-        out_row.addWidget(self.output_input)
+        out_row.addWidget(self.output_input, 1)
 
-        browse_btn = QPushButton("انتخاب…")
+        browse_btn = QPushButton(tr(T.browse))
         browse_btn.setFixedHeight(self.IN_H)
-        browse_btn.setFixedWidth(80)
+        browse_btn.setFixedWidth(self.BROWSE_W)
         browse_btn.setCursor(Qt.PointingHandCursor)
         browse_btn.setStyleSheet(f"""
             QPushButton {{
@@ -2412,11 +3263,15 @@ class SettingsPage(QWidget):
         """)
         browse_btn.clicked.connect(self._pick_output_dir)
         out_row.addWidget(browse_btn)
-        out_row.addStretch()
-        lay.addLayout(out_row); lay.addSpacing(2)
 
-        # ─ عبارت دربرگیرنده ─
-        wrap_lbl = QLabel("عبارت دربرگیرنده متغیرها")
+        out_wrap = QHBoxLayout()
+        out_wrap.setContentsMargins(0, 0, 0, 0)
+        out_wrap.addWidget(out_container)
+        out_wrap.addStretch()
+        lay.addLayout(out_wrap); lay.addSpacing(2)
+
+        # Wrapper
+        wrap_lbl = QLabel(tr(T.placeholder_wrapper))
         wrap_lbl.setFont(lf)
         wrap_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
         lay.addWidget(wrap_lbl)
@@ -2424,8 +3279,8 @@ class SettingsPage(QWidget):
         self.wrapper_input = QLineEdit()
         self.wrapper_input.setText(SETTINGS.get("placeholder_wrapper", '""'))
         self.wrapper_input.setFixedHeight(self.IN_H)
-        self.wrapper_input.setFixedWidth(self.WRAPPER_W)
-        self.wrapper_input.setPlaceholderText('مثلاً: ""')
+        self.wrapper_input.setFixedWidth(self.FIELD_W)
+        self.wrapper_input.setPlaceholderText(tr(T.ph_wrapper))
         self.wrapper_input.setStyleSheet(f"""
             QLineEdit {{
                 background-color: #FFFFFF;
@@ -2445,19 +3300,16 @@ class SettingsPage(QWidget):
         wrap_row.addStretch()
         lay.addLayout(wrap_row)
 
-        hint = QLabel(
-            "متغیرها در فایل Word بین این عبارت نوشته می‌شوند.\n"
-            "مثال:  " + self.wrapper_input.text() + "نام کاربر" + self.wrapper_input.text()
-        )
+        example = self.wrapper_input.text() + tr(T.user_name) + self.wrapper_input.text()
+        hint = QLabel(tr(T.wrapper_hint, example=example))
         hint.setStyleSheet(f"color: {C_MUTED}; background: transparent; font-size: 10px;")
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
         lay.addStretch()
 
-        # ─ دکمه ذخیره: در RTL با addWidget اول، سمت راست قرار می‌گیرد ─
         btn_row = QHBoxLayout()
-        self.save_btn = QPushButton("ذخیره تنظیمات")
+        self.save_btn = QPushButton(tr(T.save_settings))
         self.save_btn.setCursor(Qt.PointingHandCursor)
         self.save_btn.setFixedHeight(42); self.save_btn.setMinimumWidth(160)
         self.save_btn.setStyleSheet(f"""
@@ -2470,35 +3322,66 @@ class SettingsPage(QWidget):
             QPushButton:hover {{ background-color: {C_DARK_GREEN}; }}
         """)
         self.save_btn.clicked.connect(self._on_save)
-        btn_row.addWidget(self.save_btn)   # سمت راست در RTL
+        btn_row.addWidget(self.save_btn)
         btn_row.addStretch()
         lay.addLayout(btn_row)
 
+    def _style_combo(self, combo):
+        combo.setStyleSheet(f"""
+            QComboBox {{
+                background-color: #FFFFFF;
+                border: 1.5px solid {C_BORDER};
+                border-radius: 8px;
+                padding-left: 26px;
+                padding-right: 10px;
+                color: {C_DARK_GREEN};
+                font-size: 11px;
+            }}
+            QComboBox:focus, QComboBox:on {{ border-color: {C_GREEN}; }}
+            QComboBox QAbstractItemView {{
+                background-color: #FFFFFF;
+                border: 1px solid {C_BORDER};
+                border-radius: 8px;
+                padding: 4px;
+                outline: none;
+                color: {C_DARK_GREEN};
+                selection-background-color: {C_LIGHT_GREEN};
+                selection-color: {C_DARK_GREEN};
+            }}
+            QComboBox QAbstractItemView::item {{
+                padding: 6px; border-radius: 6px; min-height: 20px;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background-color: {C_HOVER};
+            }}
+        """)
+
     def _pick_output_dir(self):
         start = self.output_input.text() or str(Path.home())
-        d = QFileDialog.getExistingDirectory(self, "انتخاب مسیر خروجی", start)
+        d = QFileDialog.getExistingDirectory(self, tr(T.select_output_dir), start)
         if d:
             self.output_input.setText(d)
 
     def _on_save(self):
-        new_theme = self.theme_combo.currentData()
+        new_lang = self.lang_combo.currentData()
         new_output = self.output_input.text().strip()
         new_wrapper = self.wrapper_input.text()
 
         if not new_output:
-            ThemedDialog.warning(self, "خطا", "مسیر خروجی نمی‌تواند خالی باشد.")
+            ThemedDialog.warning(self, tr(T.error), tr(T.err_output_empty))
             return
         try:
             Path(new_output).mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            ThemedDialog.error(self, "خطا", f"مسیر خروجی قابل استفاده نیست:\n{e}")
+            ThemedDialog.error(self, tr(T.error),
+                               tr(T.err_output_invalid, err=e))
             return
 
         if len(new_wrapper) == 0:
-            ThemedDialog.warning(self, "خطا", "عبارت دربرگیرنده نمی‌تواند خالی باشد.")
+            ThemedDialog.warning(self, tr(T.error), tr(T.err_wrapper_empty))
             return
 
-        SETTINGS["theme"] = new_theme
+        SETTINGS["language"] = new_lang
         SETTINGS["output_dir"] = new_output
         SETTINGS["placeholder_wrapper"] = new_wrapper
         save_settings()
@@ -2507,7 +3390,7 @@ class SettingsPage(QWidget):
 
 
 # ═════════════════════════════════════════════════════════════════
-#  ظرف اصلی
+#  Container — plain background, no decorations
 # ═════════════════════════════════════════════════════════════════
 
 class Container(QWidget):
@@ -2516,68 +3399,59 @@ class Container(QWidget):
         self.setStyleSheet("background: transparent;")
 
     def paintEvent(self, e):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
 
+        try:
+            is_max = self.window().isMaximized()
+        except Exception:
+            is_max = False
+        radius = 0 if is_max else 14
+
         path = QPainterPath()
-        path.addRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 14, 14)
+        path.addRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
         p.fillPath(path, QColor(C_BG))
-        p.setClipPath(path)
 
-        c1 = QPainterPath()
-        c1.moveTo(0, h); c1.lineTo(0, h * 0.55)
-        c1.cubicTo(w * 0.08, h * 0.72, w * 0.20, h * 0.85, w * 0.34, h)
-        c1.closeSubpath()
-        p.fillPath(c1, QColor(C_DARK_GREEN))
-
-        c2 = QPainterPath()
-        c2.moveTo(0, h); c2.lineTo(0, h * 0.72)
-        c2.cubicTo(w * 0.06, h * 0.83, w * 0.16, h * 0.92, w * 0.24, h)
-        c2.closeSubpath()
-        p.fillPath(c2, QColor(C_ACCENT1))
-
-        c3 = QPainterPath()
-        c3.moveTo(w, 0); c3.lineTo(w * 0.90, 0)
-        c3.cubicTo(w * 0.92, h * 0.06, w * 0.96, h * 0.12, w, h * 0.18)
-        c3.closeSubpath()
-        p.fillPath(c3, QColor(C_ACCENT2))
-
-        p.setClipping(False)
-        p.setPen(QPen(QColor(C_BORDER), 1)); p.setBrush(Qt.NoBrush)
-        p.drawPath(path)
+        if radius > 0:
+            p.setPen(QPen(QColor(C_BORDER), 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawPath(path)
 
 
 # ═════════════════════════════════════════════════════════════════
-#  پنجره اصلی
+#  MainWindow
 # ═════════════════════════════════════════════════════════════════
 
 class MainWindow(QMainWindow):
     theme_changed = Signal()
+    RESIZE_MARGIN = 6
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("سامانه صدور نامه")
-        self.setWindowFlags(Qt.FramelessWindowHint)
+        self._built_language = SETTINGS.get("language", "fa")
+
+        self.setWindowTitle(tr(T.app_title))
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.resize(1100, 720)
-        self.setMinimumSize(820, 580)
+        self.setMinimumSize(300, 300)
+
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
 
         root = QWidget()
         root.setAttribute(Qt.WA_TranslucentBackground)
         self._root_layout = QVBoxLayout(root)
-        self._root_layout.setContentsMargins(16, 16, 16, 16)
+        self._root_layout.setContentsMargins(0, 0, 0, 0)
 
         self.container = Container()
-        sh = QGraphicsDropShadowEffect(self)
-        sh.setBlurRadius(40); sh.setOffset(0, 10)
-        sh.setColor(QColor(0, 0, 0, 70))
-        self.container.setGraphicsEffect(sh)
         self._root_layout.addWidget(self.container)
         self.setCentralWidget(root)
 
         v = QVBoxLayout(self.container)
         v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
-        v.addWidget(TitleBar(self))
+        self.title_bar = TitleBar(self)
+        v.addWidget(self.title_bar)
 
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("background: transparent;")
@@ -2595,6 +3469,7 @@ class MainWindow(QMainWindow):
         self.home_page.dropdown.template_selected.connect(self._on_template_selected)
         self.home_page.dropdown.template_deleted.connect(self._on_template_deleted)
         self.home_page.settings_requested.connect(self._go_to_settings)
+        self.home_page.quick_template_selected.connect(self._on_template_selected)
 
         self.add_page.back_requested.connect(self._go_to_home)
         self.add_page.saved.connect(self._on_letter_saved)
@@ -2606,8 +3481,90 @@ class MainWindow(QMainWindow):
 
         self.reload_templates()
 
+    def _apply_win32_styles(self):
+        """استایل WS_THICKFRAME و WS_CAPTION را در سطح Win32 فعال می‌کند
+        تا ویندوز پنجره را به عنوان یک پنجره قابل Snap و Resize بشناسد."""
+        if sys.platform != "win32":
+            return
+        try:
+            from win32gui import GetWindowLong, SetWindowLong
+            from win32con import WS_THICKFRAME, WS_CAPTION, WS_SYSMENU, WS_MINIMIZEBOX, WS_MAXIMIZEBOX, GWL_STYLE
+
+            hwnd = int(self.winId())
+
+            style = GetWindowLong(hwnd, GWL_STYLE)
+            style |= WS_THICKFRAME      # برای Resize و Snap
+            style |= WS_CAPTION         # برای Drag و Snap
+            style |= WS_SYSMENU         # برای منوی سیستم
+            style |= WS_MINIMIZEBOX     # برای مینیمایز
+            style |= WS_MAXIMIZEBOX     # برای مکسیمایز
+            SetWindowLong(hwnd, GWL_STYLE, style)
+        except Exception as e:
+            print(f"[Aero Snap] init styles failed: {e}")
+
+    def nativeEvent(self, eventType, message):
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+                try:
+                    addr = int(message)
+                except Exception:
+                    addr = ctypes.cast(message, ctypes.c_void_p).value
+                msg = wintypes.MSG.from_address(addr)
+
+                WM_NCCALCSIZE = 0x0083
+                WM_NCHITTEST = 0x0084
+
+                # ─── حذف حاشیه‌های Non-Client تا عنوان بومی حذف شود،
+                #     اما استایل WS_THICKFRAME باقی بماند و Snap کار کند ───
+                if msg.message == WM_NCCALCSIZE:
+                    # مقدار 0 برگردانده می‌شود تا کل پنجره «Client Area» در نظر گرفته شود
+                    return True, 0
+
+                # ─── تعیین نواحی Resize روی لبه‌ها ───
+                if msg.message == WM_NCHITTEST and not self.isMaximized():
+                    x = ctypes.c_short(msg.lParam & 0xFFFF).value
+                    y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+
+                    dpr = 1.0
+                    try:
+                        wh = self.windowHandle()
+                        if wh is not None:
+                            dpr = wh.devicePixelRatio() or 1.0
+                    except Exception:
+                        pass
+
+                    local = self.mapFromGlobal(QPoint(int(x / dpr), int(y / dpr)))
+                    w, h = self.width(), self.height()
+                    m = self.RESIZE_MARGIN
+
+                    on_l = 0 <= local.x() < m
+                    on_r = w - m < local.x() <= w
+                    on_t = 0 <= local.y() < m
+                    on_b = h - m < local.y() <= h
+
+                    if on_t and on_l: return True, 13  # HTTOPLEFT
+                    if on_t and on_r: return True, 14  # HTTOPRIGHT
+                    if on_b and on_l: return True, 16  # HTBOTTOMLEFT
+                    if on_b and on_r: return True, 17  # HTBOTTOMRIGHT
+                    if on_l:          return True, 10  # HTLEFT
+                    if on_r:          return True, 11  # HTRIGHT
+                    if on_t:          return True, 12  # HTTOP
+                    if on_b:          return True, 15  # HTBOTTOM
+
+            except Exception:
+                pass
+
+        return super().nativeEvent(eventType, message)
+
+    # ─── فراخوانی _apply_win32_styles پس از نمایش پنجره ───
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._apply_win32_styles()
+        
     def reload_templates(self):
-        self.home_page.dropdown.set_templates(load_templates())
+        self.home_page.set_templates(load_templates())
 
     def _go_to_home(self):
         self.stack.setCurrentWidget(self.home_page)
@@ -2626,9 +3583,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.settings_page)
 
     def _on_settings_saved(self):
-        current_dark = C_DARK_GREEN
-        new_dark = THEMES.get(SETTINGS.get("theme"), {}).get("dark")
-        if new_dark and new_dark != current_dark:
+        lang_changed = SETTINGS.get("language", "fa") != self._built_language
+        if lang_changed:
             self.theme_changed.emit()
         else:
             self._go_to_home()
@@ -2639,8 +3595,7 @@ class MainWindow(QMainWindow):
 
     def _on_template_selected(self, tpl):
         if not HAS_DOCX:
-            ThemedDialog.error(self, "کتابخانه ناقص",
-                               "python-docx نصب نیست.\n\npip install python-docx")
+            ThemedDialog.error(self, tr(T.missing_library), tr(T.no_docx))
             return
         self.edit_page.load_template(tpl)
         self.stack.setCurrentWidget(self.edit_page)
@@ -2650,9 +3605,8 @@ class MainWindow(QMainWindow):
         address = tpl.get("address", "")
 
         ok = ThemedDialog.confirm_delete(
-            self, "حذف قالب",
-            f"آیا از حذف «{name}» مطمئن هستید؟\n"
-            "فایل ورد مربوطه نیز از پوشه Words حذف خواهد شد."
+            self, tr(T.delete_template),
+            tr(T.confirm_delete_tpl, name=name)
         )
         if not ok: return
 
@@ -2663,42 +3617,46 @@ class MainWindow(QMainWindow):
         data = [t for t in data if t.get("name") != name]
         save_templates(data)
 
-        file_deleted = False
         if not others and address:
             p = Path(address)
             if p.exists():
                 try:
                     p.unlink()
-                    file_deleted = True
                 except Exception as e:
-                    print(f"[خطا حذف فایل] {e}")
+                    print(f"[error] file removal: {e}")
+
+        qa = [n for n in SETTINGS.get("quick_access", []) if n != name]
+        if qa != SETTINGS.get("quick_access", []):
+            SETTINGS["quick_access"] = qa
+            save_settings()
 
         self.reload_templates()
 
-        msg = f"قالب «{name}» با موفقیت حذف شد."
-        if file_deleted:
-            msg += "\nفایل ورد نیز از پوشه Words پاک شد."
-        elif others:
-            msg += "\n(فایل ورد حفظ شد چون قالب دیگری از آن استفاده می‌کند.)"
-        ThemedDialog.info(self, "حذف شد", msg)
+        ThemedDialog.info(self, tr(T.deleted),
+                          tr(T.deleted_ok, name=name))
 
     def changeEvent(self, e):
         if e.type() == QEvent.WindowStateChange:
-            m = 0 if self.isMaximized() else 16
-            self._root_layout.setContentsMargins(m, m, m, m)
+            try:
+                self.title_bar.refresh_radius()
+            except Exception:
+                pass
+            try:
+                self.container.update()
+            except Exception:
+                pass
         super().changeEvent(e)
 
 
 # ═════════════════════════════════════════════════════════════════
-#  اجرا
+#  main
 # ═════════════════════════════════════════════════════════════════
 
 def main():
     load_settings()
-    reload_theme_colors()
 
     app = QApplication(sys.argv)
-    app.setLayoutDirection(Qt.RightToLeft)
+    app.setLayoutDirection(_dir())
     app.setQuitOnLastWindowClosed(True)
 
     for fam in ("Vazirmatn", "IRANSans", "Tahoma", "Segoe UI"):
@@ -2717,7 +3675,7 @@ def main():
         old.deleteLater()
 
         load_settings()
-        reload_theme_colors()
+        app.setLayoutDirection(_dir())
 
         new_win = MainWindow()
         new_win.theme_changed.connect(restart)
