@@ -29,6 +29,18 @@ def _application_root() -> Path:
 
 
 ICON_DIR = _application_root() / "resources" / "icons"
+if not ICON_DIR.is_dir():
+    # In a regular wheel install, assets are installed in the private package
+    # ``wordcloner_assets`` rather than a generic top-level ``resources``.
+    try:
+        from importlib.resources import files
+
+        packaged_icons = files("wordcloner_assets").joinpath("icons")
+        candidate = Path(str(packaged_icons))
+        if candidate.is_dir():
+            ICON_DIR = candidate
+    except (ImportError, ModuleNotFoundError, TypeError, OSError):
+        pass
 
 
 def _color_name(color: str | QColor | None, fallback: str) -> str:
@@ -115,6 +127,10 @@ def icon_arrow_left(size=18, color=None):
 
 def icon_gear(size=22, color=None):
     return _asset("settings", size, color, C_DARK_GREEN)
+
+
+def icon_help(size=20, color=None):
+    return _asset("circle-question-mark", size, color, C_GREEN)
 
 
 def icon_status(size=42, kind="info"):

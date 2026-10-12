@@ -11,13 +11,22 @@ The originals are retained until the user removes them manually.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 
 
 def _application_root() -> Path:
-    """Use the script/executable directory, not the process working directory."""
+    """Use the app directory, unless the user explicitly selects a data root.
+
+    ``WORDCLONER_HOME`` is useful for a regular/system package installation
+    whose site-packages directory is read-only. Without it, source/editable
+    installs continue to keep settings and Words beside the application files.
+    """
+    override = os.environ.get("WORDCLONER_HOME")
+    if override and override.strip():
+        return Path(override).expanduser().resolve()
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent

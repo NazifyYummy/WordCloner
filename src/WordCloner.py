@@ -4,7 +4,11 @@
 ================================================================================
 """
 
+import argparse
+import os
 import sys
+import tempfile
+from datetime import date, datetime
 from json import load, dump
 from shutil import copy2
 from copy import deepcopy
@@ -15,24 +19,34 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QGraphicsDropShadowEffect,
     QStackedWidget, QLineEdit, QFileDialog, QDialog, QComboBox,
-    QScrollArea, QColorDialog, QCheckBox
+    QScrollArea, QColorDialog, QCheckBox, QSystemTrayIcon, QMenu
 )
 from PySide6.QtCore import (
-    Qt, QPoint, Signal, QSize, QRectF, QEvent, QTimer, QRegularExpression
+    Qt, QPoint, Signal, QSize, QRectF, QEvent, QTimer, QRegularExpression, QUrl
 )
 from PySide6.QtGui import (
     QIcon, QPainter, QColor, QFont, QPen, QPainterPath,
-    QGuiApplication, QPalette, QRegularExpressionValidator
+    QGuiApplication, QPalette, QRegularExpressionValidator, QAction,
+    QDesktopServices,
 )
 
 try:
     from docx import Document
     from docx.shared import Pt, RGBColor
     from docx.oxml.ns import qn
+    from docx.table import Table as DocxTable
+    from docx.text.paragraph import Paragraph as DocxParagraph
     HAS_DOCX = True
 except ImportError:
     HAS_DOCX = False
     print("[warning] python-docx is not installed → pip install python-docx")
+
+try:
+    from openpyxl import load_workbook
+    HAS_EXCEL = True
+except ImportError:
+    load_workbook = None
+    HAS_EXCEL = False
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -44,7 +58,6 @@ from wordcloner_paths import (
 )
 
 # ═════════════════════════════════════════════════════════════════
-
 #  Settings
 # ═════════════════════════════════════════════════════════════════
 
@@ -52,12 +65,12 @@ DEFAULT_SETTINGS = {
     "output_dir": str(Path.home() / "Desktop"),
     "placeholder_wrapper": '##',
     "quick_access": [],
-    "language": "fa",     # fa | en
+    "language": "en",     
     "window_size": [720, 600],
     "window_maximized": False,
 }
 SETTINGS = dict(DEFAULT_SETTINGS)
-
+_FORCE_ENGLISH_UI = False
 
 def load_settings():
     global SETTINGS
@@ -71,7 +84,7 @@ def load_settings():
                 if not isinstance(SETTINGS.get("quick_access"), list):
                     SETTINGS["quick_access"] = []
                 if SETTINGS.get("language") not in ("fa", "en"):
-                    SETTINGS["language"] = "fa"
+                    SETTINGS["language"] = "en"
         except Exception as e:
             print(f"[error] reading settings: {e}")
 
@@ -96,17 +109,23 @@ LANG_MAP = {"fa": "persian", "en": "english"}
 def tr(item, **kwargs):
     if not isinstance(item, dict):
         return str(item)
-    key = LANG_MAP.get(SETTINGS.get("language", "fa"), "persian")
-    value = item.get(key)
-    if value is None:
-        value = item.get("persian", "")
+
+    if _FORCE_ENGLISH_UI:
+        value = item.get("english")
+        if value is None:
+            value = item.get("persian", "")
+    else:
+        key = LANG_MAP.get(SETTINGS.get("language", "fa"), "persian")
+        value = item.get(key)
+        if value is None:
+            value = item.get("persian", "")
+
     if kwargs:
         try:
             value = value.format(**kwargs)
         except Exception:
             pass
     return value
-
 
 def _is_rtl():
     return SETTINGS.get("language", "fa") == "fa"
@@ -115,6 +134,7 @@ def _is_rtl():
 def _dir():
     return Qt.RightToLeft if _is_rtl() else Qt.LeftToRight
 
+# ═════════════════════════════════════════════════════════════════
 #  Colors (only green theme)
 # ═════════════════════════════════════════════════════════════════
 
@@ -136,7 +156,7 @@ C_RED         = "#E0453A"
 from wordcloner_icons import (
     icon_document, icon_document_big, icon_plus_circle, icon_plus_white,
     icon_trash, icon_chevron_down, icon_grip, icon_upload, icon_arrow_left,
-    icon_gear, icon_status, icon_minimize, icon_maximize, icon_close,
+    icon_gear, icon_help, icon_status, icon_minimize, icon_maximize, icon_close,
     icon_check,
 )
 
@@ -154,7 +174,6 @@ def apply_color_button_style(btn, hex_color):
     """)
 
 # ═════════════════════════════════════════════════════════════════
-
 #  ComboWithArrow
 # ═════════════════════════════════════════════════════════════════
 
@@ -733,9 +752,40 @@ def _copy_run_fonts(src_run, dst_run):
         pass
 
 
+def _template_paragraphs_in_document_order(doc):
+    """Return body paragraphs and table-cell paragraphs in reading order.
+
+    Placeholder replacement already processes body paragraphs and top-level
+    tables. Keeping extraction in the same document order ensures CLI values
+    map predictably even when a template uses table-based layouts.
+    """
+    paragraphs = []
+    seen = set()
+
+    def add_paragraph(paragraph):
+        element = paragraph._p
+        if element in seen:
+            return
+        seen.add(element)
+        paragraphs.append(paragraph)
+
+    for block in doc.element.body.iterchildren():
+        if block.tag == qn("w:p"):
+            add_paragraph(DocxParagraph(block, doc))
+        elif block.tag == qn("w:tbl"):
+            table = DocxTable(block, doc)
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        add_paragraph(paragraph)
+
+    return paragraphs
+
+
 def extract_placeholders(docx_path):
     doc = Document(docx_path)
-    para_texts = [p.text for p in doc.paragraphs]
+    paragraphs = _template_paragraphs_in_document_order(doc)
+    para_texts = [p.text for p in paragraphs]
 
     para_starts = []
     offset = 0
@@ -791,7 +841,7 @@ def extract_placeholders(docx_path):
 
             if (0 <= local_start < len(para_text_norm)
                     and local_end <= len(para_text_norm)):
-                p = doc.paragraphs[pi]
+                p = paragraphs[pi]
                 runs = list(p.runs)
                 if runs:
                     parts = []
@@ -967,6 +1017,171 @@ def replace_placeholders_in_docx(src_path, dst_path, replacements, font_override
 
     doc.save(dst_path)
 
+
+class ExcelImportError(ValueError):
+    """A workbook cannot be mapped safely to the current template."""
+
+
+def _excel_is_blank(value):
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _excel_cell_text(value):
+    """Convert Excel cell values to stable, human-readable replacement text."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        if not any((value.hour, value.minute, value.second, value.microsecond)):
+            return value.date().isoformat()
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def read_excel_records(excel_path, variable_names, header_row=False):
+    """Read the active worksheet using filename + ordered-variable columns."""
+    if not HAS_EXCEL or load_workbook is None:
+        raise ExcelImportError(tr(T.batch_excel_library_missing))
+
+    path = Path(excel_path).expanduser()
+    if path.suffix.lower() not in (".xlsx", ".xlsm"):
+        raise ExcelImportError(tr(T.batch_excel_type_error, path=path))
+    if not path.is_file():
+        raise ExcelImportError(tr(T.batch_excel_not_found, path=path))
+
+    try:
+        workbook = load_workbook(str(path), read_only=True, data_only=True)
+    except Exception as exc:
+        raise ExcelImportError(tr(T.batch_excel_read_error, err=exc)) from exc
+
+    records = []
+    try:
+        worksheet = workbook.active
+        first_data_row = 2 if header_row else 1
+        expected_columns = len(variable_names) + 1
+        max_column = max(int(worksheet.max_column or 1), expected_columns)
+
+        for row_number, row in enumerate(
+                worksheet.iter_rows(
+                    min_row=first_data_row,
+                    max_row=int(worksheet.max_row or 0),
+                    max_col=max_column,
+                    values_only=True,
+                ),
+                start=first_data_row):
+            values = list(row)
+            if all(_excel_is_blank(value) for value in values):
+                continue
+
+            for offset, extra_value in enumerate(values[expected_columns:]):
+                if not _excel_is_blank(extra_value):
+                    extra_column = expected_columns + offset + 1
+                    raise ExcelImportError(tr(
+                        T.batch_extra_columns,
+                        row=row_number,
+                        column=extra_column,
+                        variables=len(variable_names),
+                    ))
+
+            output_name = _excel_cell_text(values[0]).strip()
+            if not output_name:
+                raise ExcelImportError(tr(T.batch_filename_empty, row=row_number))
+
+            replacements = {
+                variable: _excel_cell_text(
+                    values[index + 1] if index + 1 < len(values) else None
+                )
+                for index, variable in enumerate(variable_names)
+            }
+            records.append((row_number, output_name, replacements))
+    except ExcelImportError:
+        raise
+    except Exception as exc:
+        raise ExcelImportError(tr(T.batch_excel_read_error, err=exc)) from exc
+    finally:
+        try:
+            workbook.close()
+        except Exception:
+            pass
+
+    if not records:
+        raise ExcelImportError(tr(T.batch_no_data_rows))
+    return records
+
+
+def _save_docx_atomically(src_path, dst_path, replacements, font_overrides,
+                          overwrite=False):
+    """Write a complete DOCX to a sibling temporary file before committing."""
+    dst_path = Path(dst_path)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    if dst_path.exists() and not overwrite:
+        raise FileExistsError(str(dst_path))
+
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{dst_path.stem}.", suffix=".docx", dir=str(dst_path.parent)
+    )
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        replace_placeholders_in_docx(
+            str(src_path), str(temp_path), replacements, font_overrides
+        )
+        if dst_path.exists() and not overwrite:
+            raise FileExistsError(str(dst_path))
+        os.replace(str(temp_path), str(dst_path))
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return dst_path
+
+
+def _safe_batch_filename(raw_name, output_dir, reserved_names):
+    name = str(raw_name).strip()
+    invalid = '<>:"/\\|?*'
+    name = "".join("_" if ch in invalid or ord(ch) < 32 else ch for ch in name)
+    name = name.rstrip(" .")
+    if not name:
+        raise ValueError(tr(T.batch_filename_empty, row="?"))
+    if not name.lower().endswith(".docx"):
+        name += ".docx"
+
+    candidate = Path(name)
+    stem = candidate.stem.rstrip(" .") or "Document"
+    suffix = ".docx"
+    if stem.upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
+        stem = f"_{stem}"
+
+    output_dir = Path(output_dir)
+    number = 1
+    while True:
+        file_name = f"{stem}{suffix}" if number == 1 else f"{stem}_{number}{suffix}"
+        identity = file_name.casefold()
+        if identity not in reserved_names and not (output_dir / file_name).exists():
+            reserved_names.add(identity)
+            return file_name
+        number += 1
+
+
+def _font_size_value(size_combo):
+    size_text = size_combo.currentText().strip().lower()
+    if size_text in ("", "auto", tr(T.auto).strip().lower()):
+        return None
+    digit_map = str.maketrans(
+        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+        "01234567890123456789",
+    )
+    normalized = size_text.translate(digit_map).replace(",", ".").replace("٫", ".")
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
+
 # ═════════════════════════════════════════════════════════════════
 #  TitleBar — buttons ALWAYS on the right, both languages
 # ═════════════════════════════════════════════════════════════════
@@ -979,15 +1194,12 @@ class TitleBar(QFrame):
         self.setFixedHeight(46)
         self.setObjectName("titleBar")
 
-        # ── Force LTR layout so buttons stay on the right ──
-        # (otherwise RTL app direction would mirror them to the left)
         self.setLayoutDirection(Qt.LeftToRight)
         
         lay = QHBoxLayout(self)
         lay.setContentsMargins(16, 0, 8, 0)
         lay.setSpacing(10)
 
-        # ── Left: icon + title ──
         ico = QLabel()
         ico.setPixmap(icon_document(20, "#FFFFFF").pixmap(QSize(20, 20)))
         ico.setStyleSheet("background: transparent;")
@@ -1001,7 +1213,6 @@ class TitleBar(QFrame):
         lay.addWidget(t)
         lay.addStretch()
 
-        # ── Right: minimize / maximize / close ──
         b_min = self._btn("", C_GREEN)
         b_max = self._btn("", C_GREEN)
         b_cls = self._btn("", C_RED)
@@ -1719,6 +1930,7 @@ class QuickAccessItem(QFrame):
 class QuickAccessWidget(QWidget):
     template_selected = Signal(dict)
     add_requested = Signal()
+    quick_access_changed = Signal()
 
     def __init__(self):
         super().__init__()
@@ -1850,6 +2062,7 @@ class QuickAccessWidget(QWidget):
         save_settings()
         self._quick_names = [n for n in self._quick_names if n != name]
         self._rebuild()
+        self.quick_access_changed.emit() 
 
     def _on_reorder(self, items):
         new_order = [getattr(it, "_name", "") for it in items
@@ -1859,6 +2072,7 @@ class QuickAccessWidget(QWidget):
         SETTINGS["quick_access"] = new_order
         save_settings()
         self._quick_names = new_order
+        self.quick_access_changed.emit() 
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -1957,6 +2171,119 @@ class DropZone(QFrame):
         f = QFont(); f.setPointSize(11)
         self.text_lbl.setFont(f)
         self.text_lbl.setStyleSheet(f"color: {C_MUTED}; background: transparent; border: none;")
+        self._apply_style(active=False)
+
+
+class ExcelDropZone(QFrame):
+    file_selected = Signal(str)
+    SUPPORTED_SUFFIXES = (".xlsx", ".xlsm")
+
+    def __init__(self):
+        super().__init__()
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setObjectName("excelDropZone")
+        self._file_path = None
+        self.setMinimumHeight(130)
+        self._apply_style(active=False)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(8)
+        self.icon_lbl = QLabel()
+        self.icon_lbl.setPixmap(icon_upload(42).pixmap(QSize(42, 42)))
+        self.icon_lbl.setAlignment(Qt.AlignCenter)
+        self.icon_lbl.setStyleSheet("background: transparent; border: none;")
+        self.icon_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.text_lbl = QLabel(tr(T.batch_drop_hint))
+        self.text_lbl.setAlignment(Qt.AlignCenter)
+        self.text_lbl.setWordWrap(True)
+        self.text_lbl.setStyleSheet(
+            f"color: {C_MUTED}; background: transparent; border: none;"
+        )
+        self.text_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+        layout.addStretch()
+        layout.addWidget(self.icon_lbl)
+        layout.addWidget(self.text_lbl)
+        layout.addStretch()
+
+    def _apply_style(self, active=False):
+        color = C_GREEN if active else C_BORDER
+        background = C_LIGHT_GREEN if active else "#FAFCFA"
+        self.setStyleSheet(f"""
+            QFrame#excelDropZone {{
+                background-color: {background};
+                border: 2px dashed {color};
+                border-radius: 12px;
+            }}
+            QFrame#excelDropZone:hover {{
+                border-color: {C_GREEN}; background-color: {C_HOVER};
+            }}
+        """)
+
+    @classmethod
+    def _is_supported(cls, path):
+        return Path(path).suffix.lower() in cls.SUPPORTED_SUFFIXES
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls and self._is_supported(urls[0].toLocalFile()):
+                event.acceptProposedAction()
+                self._apply_style(active=True)
+                return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._apply_style(active=False)
+
+    def dropEvent(self, event):
+        self._apply_style(active=False)
+        urls = event.mimeData().urls()
+        if urls:
+            path = urls[0].toLocalFile()
+            if self._is_supported(path):
+                self._set_file(path)
+                event.acceptProposedAction()
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return
+        start_dir = str(
+            Path(self._file_path).parent if self._file_path else DOCUMENTS_DIR
+        )
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr(T.batch_issue_title),
+            start_dir,
+            tr(T.batch_excel_filter),
+        )
+        if path:
+            self._set_file(path)
+
+    def _set_file(self, path):
+        self._file_path = str(path)
+        self.icon_lbl.setPixmap(icon_check(42).pixmap(QSize(42, 42)))
+        self.text_lbl.setText(Path(path).name)
+        font = QFont(); font.setPointSize(10); font.setBold(True)
+        self.text_lbl.setFont(font)
+        self.text_lbl.setStyleSheet(
+            f"color: {C_DARK_GREEN}; background: transparent; border: none;"
+        )
+        self.file_selected.emit(self._file_path)
+
+    def file_path(self):
+        return self._file_path
+
+    def reset(self):
+        self._file_path = None
+        self.icon_lbl.setPixmap(icon_upload(42).pixmap(QSize(42, 42)))
+        self.text_lbl.setText(tr(T.batch_drop_hint))
+        font = QFont(); font.setPointSize(10)
+        self.text_lbl.setFont(font)
+        self.text_lbl.setStyleSheet(
+            f"color: {C_MUTED}; background: transparent; border: none;"
+        )
         self._apply_style(active=False)
 
 
@@ -2075,6 +2402,7 @@ class FontSizeCombo(ComboWithArrow):
 class HomePage(QWidget):
     settings_requested = Signal()
     quick_template_selected = Signal(dict)
+    quick_access_changed = Signal()  
 
     def __init__(self):
         super().__init__()
@@ -2110,13 +2438,43 @@ class HomePage(QWidget):
             }}
         """)
         gear_btn.clicked.connect(self.settings_requested.emit)
-        top_row.addWidget(gear_btn)
+
+        guide_btn = QPushButton(tr(T.guide))
+        guide_btn.setIcon(icon_help(19))
+        guide_btn.setIconSize(QSize(19, 19))
+        guide_btn.setLayoutDirection(_dir())
+        guide_btn.setFixedHeight(38)
+        guide_btn.setMinimumWidth(120)
+        guide_btn.setCursor(Qt.PointingHandCursor)
+        guide_btn.setToolTip(tr(T.guide_tooltip))
+        guide_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {C_DARK_GREEN};
+                border: 1px solid transparent;
+                border-radius: 10px;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 0 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {C_LIGHT_GREEN};
+                border-color: {C_BORDER};
+            }}
+        """)
+        guide_btn.clicked.connect(self._open_guide)
+
+        navigation = QVBoxLayout()
+        navigation.setContentsMargins(0, 0, 0, 0)
+        navigation.setSpacing(2)
+        navigation.addWidget(gear_btn)
+        navigation.addWidget(guide_btn)
+        top_row.addLayout(navigation)
         top_row.addStretch()
         outer.addLayout(top_row)
 
         outer.addSpacing(4)
 
-        # Scroll container for the whole main area (small screens)
         main_scroll = QScrollArea()
         main_scroll.setWidgetResizable(True)
         main_scroll.setFrameShape(QFrame.NoFrame)
@@ -2175,7 +2533,7 @@ class HomePage(QWidget):
         self.quick_access.template_selected.connect(self.quick_template_selected.emit)
         self.quick_access.add_requested.connect(self._on_qa_add)
         qa_lay.addWidget(self.quick_access)
-
+        self.quick_access.quick_access_changed.connect(self.quick_access_changed.emit)
         center_qa = QHBoxLayout()
         center_qa.addStretch(); center_qa.addWidget(qa_wrap); center_qa.addStretch()
         mc_lay.addLayout(center_qa)
@@ -2201,6 +2559,36 @@ class HomePage(QWidget):
             SETTINGS["quick_access"] = new_names
             save_settings()
             self.quick_access.set_quick_names(new_names)
+            self.quick_access_changed.emit()      
+
+    def _open_guide(self):
+        language = SETTINGS.get("language", "fa")
+        guide_filename = (
+            "English_guide.mp4" if language == "en" else "Persian_guide.mp4"
+        )
+        program_dir = (
+            Path(sys.executable).resolve().parent
+            if getattr(sys, "frozen", False)
+            else Path(__file__).resolve().parent
+        )
+        guide_path = program_dir / "Guide" / guide_filename
+
+        if not guide_path.is_file():
+            ThemedDialog.warning(
+                self, tr(T.error), tr(T.guide_not_found, path=guide_path)
+            )
+            return
+
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(guide_path))
+            else:
+                if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(guide_path))):
+                    raise OSError("The operating system did not open the video file.")
+        except Exception as exc:
+            ThemedDialog.error(
+                self, tr(T.error), tr(T.guide_open_error, err=exc)
+            )
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -2218,7 +2606,6 @@ class AddLetterPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
-        # ─ Header (static) ─
         header_wrap = QWidget()
         header_wrap.setStyleSheet("background: transparent;")
         hw_lay = QHBoxLayout(header_wrap)
@@ -2248,7 +2635,6 @@ class AddLetterPage(QWidget):
         hw_lay.addWidget(title); hw_lay.addStretch(); hw_lay.addWidget(back_btn)
         root.addWidget(header_wrap)
 
-        # ─ Scrollable body ─
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -2308,7 +2694,6 @@ class AddLetterPage(QWidget):
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
 
-        # ─ Footer (static) ─
         footer_wrap = QWidget()
         footer_wrap.setStyleSheet("background: transparent;")
         fw_lay = QVBoxLayout(footer_wrap)
@@ -2374,7 +2759,6 @@ class AddLetterPage(QWidget):
                 ThemedDialog.error(self, tr(T.err_wrapper_count), str(we))
                 return
 
-            # ─── هیچ متغیری در فایل پیدا نشد → ذخیره نکن ───
             if not props:
                 try:
                     dst.unlink()
@@ -2408,6 +2792,7 @@ class AddLetterPage(QWidget):
 
 class EditLetterPage(QWidget):
     back_requested = Signal()
+    batch_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -2418,7 +2803,6 @@ class EditLetterPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
-        # ─ Header (static) ─
         header_wrap = QWidget()
         header_wrap.setStyleSheet("background: transparent;")
         hw_lay = QHBoxLayout(header_wrap)
@@ -2445,10 +2829,33 @@ class EditLetterPage(QWidget):
         """)
         back_btn.clicked.connect(self.back_requested.emit)
 
-        hw_lay.addWidget(self.title_lbl); hw_lay.addStretch(); hw_lay.addWidget(back_btn)
+        self.batch_btn = QPushButton(tr(T.batch_excel_issue))
+        self.batch_btn.setIcon(icon_document(17))
+        self.batch_btn.setIconSize(QSize(17, 17))
+        self.batch_btn.setCursor(Qt.PointingHandCursor)
+        self.batch_btn.setFixedHeight(34)
+        self.batch_btn.setToolTip(tr(T.batch_excel_issue))
+        self.batch_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C_LIGHT_GREEN};
+                border: 1px solid {C_BORDER};
+                border-radius: 8px;
+                color: {C_DARK_GREEN};
+                font-size: 10px; font-weight: bold;
+                padding: 0 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {C_HOVER}; border-color: {C_GREEN};
+            }}
+        """)
+        self.batch_btn.clicked.connect(self.batch_requested.emit)
+
+        hw_lay.addWidget(self.title_lbl)
+        hw_lay.addStretch()
+        hw_lay.addWidget(self.batch_btn)
+        hw_lay.addWidget(back_btn)
         root.addWidget(header_wrap)
 
-        # ─ Everything else in a scroll ─
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
@@ -2513,7 +2920,6 @@ class EditLetterPage(QWidget):
         self.scroll.setWidget(self.scroll_body)
         root.addWidget(self.scroll, 1)
 
-        # ─ Footer (static): confirm button ─
         footer_wrap = QWidget()
         footer_wrap.setStyleSheet("background: transparent;")
         fw_lay = QHBoxLayout(footer_wrap)
@@ -2606,7 +3012,6 @@ class EditLetterPage(QWidget):
         dlg = QColorDialog(QColor(cur), self)
         dlg.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
         dlg.setOption(QColorDialog.ColorDialogOption.ShowAlphaChannel, False)
-        # QColorDialog keeps a conventional left-to-right layout in both app languages.
         dlg.setLayoutDirection(Qt.LeftToRight)
         dlg.setWindowTitle(tr(T.pick_color))
         dlg.setAutoFillBackground(True)
@@ -2656,8 +3061,6 @@ class EditLetterPage(QWidget):
         """)
 
         def localize_color_dialog_labels():
-            # Force all already-created child controls to LTR as well; the
-            # parent application may use RTL for Persian pages.
             dlg.setLayoutDirection(Qt.LeftToRight)
             for control in dlg.findChildren(QWidget):
                 control.setLayoutDirection(Qt.LeftToRight)
@@ -2673,7 +3076,6 @@ class EditLetterPage(QWidget):
                 elif button_text == "cancel":
                     button.setText(tr(T.cancel))
 
-        # Run after Qt has created the non-native dialog controls.
         QTimer.singleShot(0, localize_color_dialog_labels)
 
         if dlg.exec():
@@ -2716,7 +3118,6 @@ class EditLetterPage(QWidget):
                 pass
         top.addWidget(size_combo)
 
-        # Bold
         bold_wrap = QWidget()
         bold_wrap.setStyleSheet("background: transparent;")
         bold_lay = QHBoxLayout(bold_wrap)
@@ -2732,7 +3133,6 @@ class EditLetterPage(QWidget):
         bold_lay.addWidget(bold_btn)
         top.addWidget(bold_wrap)
 
-        # Italic
         ital_wrap = QWidget()
         ital_wrap.setStyleSheet("background: transparent;")
         ital_lay = QHBoxLayout(ital_wrap)
@@ -2748,7 +3148,6 @@ class EditLetterPage(QWidget):
         ital_lay.addWidget(italic_btn)
         top.addWidget(ital_wrap)
 
-        # Color
         color_wrap = QWidget()
         color_wrap.setStyleSheet("background: transparent;")
         color_lay = QHBoxLayout(color_wrap)
@@ -2880,6 +3279,395 @@ class EditLetterPage(QWidget):
             print("[error]", ex)
 
 
+class BulkIssuePage(QWidget):
+    back_requested = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self._template = None
+        self.variable_names = []
+        self._font_options = {}
+        self.setStyleSheet("background: transparent;")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        header = QWidget()
+        header.setStyleSheet("background: transparent;")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(40, 18, 40, 12)
+        header_layout.setSpacing(10)
+
+        title = QLabel(tr(T.batch_issue_title))
+        title_font = QFont(); title_font.setPointSize(15); title_font.setBold(True)
+        title.setFont(title_font)
+        title.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
+
+        back_btn = QPushButton(tr(T.back_spaced))
+        back_btn.setIcon(icon_arrow_left(16))
+        back_btn.setIconSize(QSize(16, 16))
+        back_btn.setCursor(Qt.PointingHandCursor)
+        back_btn.setFixedHeight(34)
+        back_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: 1px solid {C_BORDER};
+                border-radius: 8px; color: {C_DARK_GREEN};
+                padding: 0 14px; font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {C_LIGHT_GREEN}; border-color: {C_GREEN};
+            }}
+        """)
+        back_btn.clicked.connect(self.back_requested.emit)
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        header_layout.addWidget(back_btn)
+        root.addWidget(header)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet(f"""
+            QScrollArea {{ background: transparent; border: none; }}
+            QScrollBar:vertical {{
+                background: transparent; width: 8px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {C_BORDER}; border-radius: 4px; min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {C_GREEN}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """)
+
+        body = QWidget()
+        body.setStyleSheet("background: transparent;")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(40, 0, 40, 18)
+        body_layout.setSpacing(10)
+
+        self.explanation_lbl = QLabel(tr(T.batch_explanation))
+        self.explanation_lbl.setWordWrap(True)
+        self.explanation_lbl.setStyleSheet(
+            f"color: {C_DARK_GREEN}; background: {C_LIGHT_GREEN}; "
+            f"border: 1px solid {C_BORDER}; border-radius: 10px; padding: 10px;"
+        )
+        body_layout.addWidget(self.explanation_lbl)
+
+        self.mapping_title = QLabel(tr(T.batch_columns_title))
+        self.mapping_title.setStyleSheet(
+            f"color: {C_DARK_GREEN}; background: transparent; font-weight: bold;"
+        )
+        body_layout.addWidget(self.mapping_title)
+
+        self.mapping_container = QWidget()
+        self.mapping_container.setStyleSheet(
+            f"background: #FFFFFF; border: 1px solid {C_BORDER}; border-radius: 8px;"
+        )
+        self.mapping_layout = QVBoxLayout(self.mapping_container)
+        self.mapping_layout.setContentsMargins(10, 8, 10, 8)
+        self.mapping_layout.setSpacing(4)
+        body_layout.addWidget(self.mapping_container)
+
+        self.header_row_check = QCheckBox(tr(T.batch_header_row))
+        self.header_row_check.setCursor(Qt.PointingHandCursor)
+        self.header_row_check.setStyleSheet(
+            f"QCheckBox {{ color: {C_DARK_GREEN}; background: transparent; spacing: 8px; }}"
+            f"QCheckBox::indicator {{ width: 16px; height: 16px; }}"
+        )
+        body_layout.addWidget(self.header_row_check)
+
+        self.format_title = QLabel(tr(T.batch_format_title))
+        self.format_title.setStyleSheet(
+            f"color: {C_DARK_GREEN}; background: transparent; font-weight: bold;"
+        )
+        body_layout.addWidget(self.format_title)
+
+        self.options_container = QWidget()
+        self.options_container.setStyleSheet("background: transparent;")
+        self.options_layout = QVBoxLayout(self.options_container)
+        self.options_layout.setContentsMargins(0, 0, 0, 0)
+        self.options_layout.setSpacing(6)
+        body_layout.addWidget(self.options_container)
+
+        self.excel_zone = ExcelDropZone()
+        body_layout.addWidget(self.excel_zone)
+        self.scroll.setWidget(body)
+        root.addWidget(self.scroll, 1)
+
+        footer = QWidget()
+        footer.setStyleSheet("background: transparent;")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(40, 8, 40, 18)
+        self.confirm_btn = QPushButton(tr(T.batch_confirm))
+        self.confirm_btn.setCursor(Qt.PointingHandCursor)
+        self.confirm_btn.setFixedHeight(44)
+        self.confirm_btn.setMinimumWidth(200)
+        self.confirm_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C_GREEN}; color: white;
+                border: none; border-radius: 10px;
+                font-size: 12px; font-weight: bold; padding: 0 24px;
+            }}
+            QPushButton:hover {{ background-color: {C_DARK_GREEN}; }}
+            QPushButton:disabled {{ background-color: {C_MUTED}; }}
+        """)
+        self.confirm_btn.clicked.connect(self._on_confirm)
+        footer_layout.addWidget(self.confirm_btn)
+        footer_layout.addStretch()
+        root.addWidget(footer)
+        self.confirm_btn.setEnabled(False)
+
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def load_template(self, template):
+        self._template = template or {}
+        self.variable_names = []
+        self._font_options = {}
+        self.header_row_check.setChecked(False)
+        self.excel_zone.reset()
+        self._clear_layout(self.mapping_layout)
+        self._clear_layout(self.options_layout)
+
+        source = Path(self._template.get("address", ""))
+        if not source.is_file():
+            ThemedDialog.warning(
+                self, tr(T.error), tr(T.err_template_not_found, path=source)
+            )
+            self.confirm_btn.setEnabled(False)
+            return
+
+        try:
+            properties = extract_placeholders(str(source))
+        except WrapperCountError as exc:
+            ThemedDialog.error(self, tr(T.err_wrapper_count), str(exc))
+            self.confirm_btn.setEnabled(False)
+            return
+        except Exception as exc:
+            ThemedDialog.error(self, tr(T.error), tr(T.cli_read_error, err=exc))
+            self.confirm_btn.setEnabled(False)
+            return
+
+        self.variable_names = list(properties.keys())
+        if not self.variable_names:
+            ThemedDialog.warning(
+                self, tr(T.error), tr(T.cli_no_variables, w=_get_wrapper())
+            )
+            self.confirm_btn.setEnabled(False)
+            return
+
+        self.mapping_layout.addWidget(QLabel(
+            tr(T.batch_mapping_filename, column=1)
+        ))
+        for index, variable in enumerate(self.variable_names, start=2):
+            label = QLabel(tr(
+                T.batch_mapping_variable,
+                column=index,
+                name=variable,
+            ))
+            label.setWordWrap(True)
+            self.mapping_layout.addWidget(label)
+
+        for index, variable in enumerate(self.variable_names, start=2):
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: #FFFFFF; border: 1px solid {C_BORDER};
+                    border-radius: 9px;
+                }}
+            """)
+            row = QHBoxLayout(card)
+            row.setContentsMargins(10, 6, 10, 6)
+            row.setSpacing(8)
+
+            variable_label = QLabel(tr(
+                T.batch_mapping_variable,
+                column=index,
+                name=variable,
+            ))
+            variable_label.setWordWrap(True)
+            variable_label.setStyleSheet(
+                f"color: {C_DARK_GREEN}; background: transparent; border: none;"
+            )
+            row.addWidget(variable_label, 1)
+
+            size_combo = FontSizeCombo()
+            size_combo.setFixedWidth(94)
+            size_combo.setToolTip(tr(T.font_size))
+            row.addWidget(size_combo)
+
+            bold_toggle = RoundToggle("B", tr(T.bold), bold=True)
+            row.addWidget(bold_toggle)
+            italic_toggle = RoundToggle("I", tr(T.italic), italic=True)
+            row.addWidget(italic_toggle)
+
+            color_btn = QPushButton()
+            color_btn.setFixedSize(20, 20)
+            color_btn.setCursor(Qt.PointingHandCursor)
+            color_btn.setToolTip(tr(T.color_tooltip))
+            color_btn.setProperty("color", "#000000")
+            apply_color_button_style(color_btn, "#000000")
+            color_btn.clicked.connect(
+                lambda _=False, key=variable: self._pick_color(key)
+            )
+            row.addWidget(color_btn)
+
+            self.options_layout.addWidget(card)
+            self._font_options[variable] = {
+                "size": size_combo,
+                "bold": bold_toggle,
+                "italic": italic_toggle,
+                "color": color_btn,
+            }
+
+        self.confirm_btn.setEnabled(True)
+
+    def _pick_color(self, key):
+        controls = self._font_options.get(key)
+        if not controls:
+            return
+        color_btn = controls["color"]
+        current = color_btn.property("color") or "#000000"
+        dialog = QColorDialog(QColor(current), self)
+        dialog.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
+        dialog.setOption(QColorDialog.ColorDialogOption.ShowAlphaChannel, False)
+        dialog.setLayoutDirection(Qt.LeftToRight)
+        dialog.setWindowTitle(tr(T.pick_color))
+
+        palette = dialog.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor("#FFFFFF"))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(C_DARK_GREEN))
+        palette.setColor(QPalette.ColorRole.Base, QColor("#FFFFFF"))
+        palette.setColor(QPalette.ColorRole.Text, QColor(C_DARK_GREEN))
+        palette.setColor(QPalette.ColorRole.Button, QColor(C_LIGHT_GREEN))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(C_DARK_GREEN))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(C_GREEN))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+        dialog.setPalette(palette)
+        dialog.setStyleSheet(f"""
+            QColorDialog {{ background: #FFFFFF; color: {C_DARK_GREEN}; }}
+            QColorDialog QLabel {{ color: {C_DARK_GREEN}; background: transparent; }}
+            QColorDialog QPushButton {{
+                color: {C_DARK_GREEN}; background: {C_LIGHT_GREEN};
+                border: 1px solid {C_BORDER}; border-radius: 6px; padding: 5px 12px;
+            }}
+        """)
+
+        def localize_hex_label():
+            dialog.setLayoutDirection(Qt.LeftToRight)
+            for child in dialog.findChildren(QWidget):
+                child.setLayoutDirection(Qt.LeftToRight)
+            for label in dialog.findChildren(QLabel):
+                text = label.text().replace("&", "").strip().rstrip(":").strip().casefold()
+                if text == "html":
+                    label.setText("HEX:")
+                    break
+
+        QTimer.singleShot(0, localize_hex_label)
+        if dialog.exec():
+            selected = dialog.currentColor()
+            if selected.isValid():
+                color_hex = selected.name()
+                color_btn.setProperty("color", color_hex)
+                apply_color_button_style(color_btn, color_hex)
+
+    def _collect_font_overrides(self):
+        result = {}
+        for variable, controls in self._font_options.items():
+            result[variable] = (
+                _font_size_value(controls["size"]),
+                controls["bold"].isChecked(),
+                controls["italic"].isChecked(),
+                controls["color"].property("color") or "#000000",
+            )
+        return result
+
+    def _on_confirm(self):
+        if not HAS_DOCX:
+            ThemedDialog.error(self, tr(T.missing_library), tr(T.no_docx))
+            return
+        if not HAS_EXCEL:
+            ThemedDialog.error(
+                self, tr(T.missing_library), tr(T.batch_excel_library_missing)
+            )
+            return
+        if not self._template or not self.variable_names:
+            return
+
+        excel_path = self.excel_zone.file_path()
+        if not excel_path:
+            ThemedDialog.warning(self, tr(T.error), tr(T.batch_excel_missing))
+            return
+
+        source = Path(self._template.get("address", ""))
+        if not source.is_file():
+            ThemedDialog.warning(
+                self, tr(T.error), tr(T.err_template_not_found, path=source)
+            )
+            return
+
+        try:
+            records = read_excel_records(
+                excel_path,
+                self.variable_names,
+                header_row=self.header_row_check.isChecked(),
+            )
+        except ExcelImportError as exc:
+            ThemedDialog.error(self, tr(T.error), str(exc))
+            return
+
+        configured_output = str(SETTINGS.get("output_dir") or "").strip()
+        base_output = Path(
+            configured_output or (Path.home() / "Desktop")
+        ).expanduser()
+        batch_directory = base_output / tr(T.batch_output_folder)
+        try:
+            batch_directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            ThemedDialog.error(
+                self, tr(T.error), tr(T.batch_output_folder_error, err=exc)
+            )
+            return
+
+        reserved_names = set()
+        font_overrides = self._collect_font_overrides()
+        completed = 0
+        for row_number, output_name, replacements in records:
+            output_file = _safe_batch_filename(
+                output_name, batch_directory, reserved_names
+            )
+            try:
+                _save_docx_atomically(
+                    source,
+                    batch_directory / output_file,
+                    replacements,
+                    font_overrides,
+                    overwrite=False,
+                )
+                completed += 1
+            except Exception as exc:
+                ThemedDialog.error(
+                    self,
+                    tr(T.error),
+                    tr(T.batch_row_write_error, row=row_number, err=exc),
+                )
+                return
+
+        ThemedDialog.info(
+            self,
+            tr(T.issued),
+            tr(T.batch_success, count=completed, path=batch_directory),
+        )
+
+
 # ═════════════════════════════════════════════════════════════════
 #  SettingsPage — no theme option
 # ═════════════════════════════════════════════════════════════════
@@ -2931,7 +3719,6 @@ class SettingsPage(QWidget):
 
         lf = QFont(); lf.setPointSize(10); lf.setBold(True)
 
-        # Language
         lang_lbl = QLabel(tr(T.app_language))
         lang_lbl.setFont(lf)
         lang_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
@@ -2954,7 +3741,6 @@ class SettingsPage(QWidget):
         lang_row.addStretch()
         lay.addLayout(lang_row); lay.addSpacing(2)
 
-        # Output dir
         out_lbl = QLabel(tr(T.output_path))
         out_lbl.setFont(lf)
         out_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
@@ -3008,7 +3794,6 @@ class SettingsPage(QWidget):
         out_wrap.addStretch()
         lay.addLayout(out_wrap); lay.addSpacing(2)
 
-        # Wrapper
         wrap_lbl = QLabel(tr(T.placeholder_wrapper))
         wrap_lbl.setFont(lf)
         wrap_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
@@ -3168,7 +3953,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._built_language = SETTINGS.get("language", "fa")
-
+        self._really_quit = False
         self.setWindowTitle(tr(T.app_title))
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -3214,9 +3999,13 @@ class MainWindow(QMainWindow):
         self.home_page = HomePage()
         self.add_page = AddLetterPage()
         self.edit_page = EditLetterPage()
+        self.bulk_page = BulkIssuePage()
         self.settings_page = SettingsPage()
 
-        for w in (self.home_page, self.add_page, self.edit_page, self.settings_page):
+        for w in (
+            self.home_page, self.add_page, self.edit_page,
+            self.bulk_page, self.settings_page,
+        ):
             self.stack.addWidget(w)
 
         self.home_page.dropdown.add_requested.connect(self._go_to_add)
@@ -3224,16 +4013,107 @@ class MainWindow(QMainWindow):
         self.home_page.dropdown.template_deleted.connect(self._on_template_deleted)
         self.home_page.settings_requested.connect(self._go_to_settings)
         self.home_page.quick_template_selected.connect(self._on_template_selected)
-
+        self.home_page.quick_access_changed.connect(self._refresh_tray_menu)
+        
         self.add_page.back_requested.connect(self._go_to_home)
         self.add_page.saved.connect(self._on_letter_saved)
 
         self.edit_page.back_requested.connect(self._go_to_home)
+        self.edit_page.batch_requested.connect(self._open_bulk_issue)
+        self.bulk_page.back_requested.connect(self._return_to_issue_page)
 
         self.settings_page.back_requested.connect(self._go_to_home)
         self.settings_page.saved.connect(self._on_settings_saved)
 
         self.reload_templates()
+        self.reload_templates()
+        self._setup_tray()
+
+    # ═════════════════════════════════════════════════════════════
+    #  System Tray
+    # ═════════════════════════════════════════════════════════════
+
+    def _setup_tray(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        icon_path = APP_ROOT / "app.ico"
+        if icon_path.exists():
+            self.tray_icon.setIcon(QIcon(str(icon_path)))
+        else:
+            self.tray_icon.setIcon(icon_document(32, C_DARK_GREEN))
+        self.tray_icon.setToolTip(tr(T.app_title))
+
+        self.tray_menu = QMenu()
+        self._build_tray_menu()
+
+        self.tray_icon.setContextMenu(self.tray_menu)
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        self.tray_icon.show()
+
+    def _build_tray_menu(self):
+        self.tray_menu.clear()
+
+        open_action = QAction(
+            tr({"persian": "باز کردن برنامه", "english": "Open App"}), self)
+        open_action.triggered.connect(self._show_from_tray)
+        self.tray_menu.addAction(open_action)
+
+        qa_names = [n for n in SETTINGS.get("quick_access", []) if n]
+        if qa_names:
+            templates = load_templates()
+            tpl_map = {t.get("name", ""): t for t in templates}
+            valid_qa = [n for n in qa_names if n in tpl_map]
+
+            if valid_qa:
+                self.tray_menu.addSeparator()
+
+                header = QAction(tr(T.quick_access), self)
+                header.setEnabled(False)
+                self.tray_menu.addAction(header)
+
+                for name in valid_qa:
+                    act = QAction(name, self)
+                    act.triggered.connect(
+                        lambda _=None, n=name:
+                            self._open_template_from_tray(n))
+                    self.tray_menu.addAction(act)
+
+        self.tray_menu.addSeparator()
+        exit_action = QAction(
+            tr({"persian": "خروج", "english": "Exit"}), self)
+        exit_action.triggered.connect(self._quit_app)
+        self.tray_menu.addAction(exit_action)
+
+    def _refresh_tray_menu(self):
+        if hasattr(self, "tray_menu"):
+            self._build_tray_menu()
+
+    def _show_from_tray(self):
+        self.show()
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _open_template_from_tray(self, name):
+        templates = load_templates()
+        tpl_map = {t.get("name", ""): t for t in templates}
+        tpl = tpl_map.get(name)
+        if tpl is None:
+            self._refresh_tray_menu()
+            return
+        self._show_from_tray()
+        self._on_template_selected(tpl)
+
+    def _on_tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            if self.isVisible() and not self.isMinimized():
+                self.hide()
+            else:
+                self._show_from_tray()
+
+    def _quit_app(self):
+        self._really_quit = True
+        QApplication.instance().quit()
 
     def _apply_win32_styles(self):
         """استایل WS_THICKFRAME و WS_CAPTION را در سطح Win32 فعال می‌کند
@@ -3247,11 +4127,11 @@ class MainWindow(QMainWindow):
             hwnd = int(self.winId())
 
             style = GetWindowLong(hwnd, GWL_STYLE)
-            style |= WS_THICKFRAME      # برای Resize و Snap
-            style |= WS_CAPTION         # برای Drag و Snap
-            style |= WS_SYSMENU         # برای منوی سیستم
-            style |= WS_MINIMIZEBOX     # برای مینیمایز
-            style |= WS_MAXIMIZEBOX     # برای مکسیمایز
+            style |= WS_THICKFRAME      
+            style |= WS_CAPTION         
+            style |= WS_SYSMENU         
+            style |= WS_MINIMIZEBOX     
+            style |= WS_MAXIMIZEBOX     
             SetWindowLong(hwnd, GWL_STYLE, style)
         except Exception as e:
             print(f"[Aero Snap] init styles failed: {e}")
@@ -3270,13 +4150,9 @@ class MainWindow(QMainWindow):
                 WM_NCCALCSIZE = 0x0083
                 WM_NCHITTEST = 0x0084
 
-                # ─── حذف حاشیه‌های Non-Client تا عنوان بومی حذف شود،
-                #     اما استایل WS_THICKFRAME باقی بماند و Snap کار کند ───
                 if msg.message == WM_NCCALCSIZE:
-                    # مقدار 0 برگردانده می‌شود تا کل پنجره «Client Area» در نظر گرفته شود
                     return True, 0
 
-                # ─── تعیین نواحی Resize روی لبه‌ها ───
                 if msg.message == WM_NCHITTEST and not self.isMaximized():
                     x = ctypes.c_short(msg.lParam & 0xFFFF).value
                     y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
@@ -3312,16 +4188,27 @@ class MainWindow(QMainWindow):
 
         return super().nativeEvent(eventType, message)
 
-    # ─── فراخوانی _apply_win32_styles پس از نمایش پنجره ───
     def showEvent(self, e):
         super().showEvent(e)
         self._apply_win32_styles()
         
     def reload_templates(self):
         self.home_page.set_templates(load_templates())
+        if hasattr(self, "tray_menu"):
+            self._refresh_tray_menu()
 
     def _go_to_home(self):
         self.stack.setCurrentWidget(self.home_page)
+
+    def _open_bulk_issue(self):
+        template = self.edit_page._template
+        if not template:
+            return
+        self.bulk_page.load_template(template)
+        self.stack.setCurrentWidget(self.bulk_page)
+
+    def _return_to_issue_page(self):
+        self.stack.setCurrentWidget(self.edit_page)
 
     def _go_to_add(self):
         self.add_page.reset()
@@ -3337,6 +4224,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.settings_page)
 
     def _on_settings_saved(self):
+        self._refresh_tray_menu()
         lang_changed = SETTINGS.get("language", "fa") != self._built_language
         if lang_changed:
             self.theme_changed.emit()
@@ -3426,6 +4314,14 @@ class MainWindow(QMainWindow):
         if timer is not None:
             timer.stop()
         self._save_window_state()
+
+        if not getattr(self, "_really_quit", False):
+            event.ignore()
+            self.hide()
+            return
+
+        if hasattr(self, "tray_icon"):
+            self.tray_icon.hide()
         super().closeEvent(event)
 
     def changeEvent(self, e):
@@ -3451,7 +4347,6 @@ class MainWindow(QMainWindow):
 # ═════════════════════════════════════════════════════════════════
 
 class LangButton(QFrame):
-    """دکمه‌ی بزرگ انتخاب زبان با افکت hover."""
     clicked = Signal()
 
     def __init__(self, primary, secondary, parent=None):
@@ -3522,7 +4417,6 @@ class LangButton(QFrame):
 
 
 class LanguageSelectDialog(QDialog):
-    """دیالوگ انتخاب زبان که فقط در اولین اجرای برنامه نمایش داده می‌شود."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3530,8 +4424,6 @@ class LanguageSelectDialog(QDialog):
             Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
-        # مستقل از زبان برنامه، این دیالوگ همیشه LTR است تا هر دو دکمه
-        # در جای متقارن دیده شوند.
         self.setLayoutDirection(Qt.LeftToRight)
         self.setFixedSize(460, 580)
 
@@ -3577,7 +4469,6 @@ class LanguageSelectDialog(QDialog):
         persian_btn.clicked.connect(lambda: self._choose("fa"))
         english_btn.clicked.connect(lambda: self._choose("en"))
 
-        # stretch factor = 1 ⇒ هر دکمه نیمی از فضای عمودی را می‌گیرد.
         v.addWidget(persian_btn, 1)
         v.addWidget(english_btn, 1)
 
@@ -3594,13 +4485,267 @@ class LanguageSelectDialog(QDialog):
                       geo.center().y() - self.height() // 2)
 
 # ═════════════════════════════════════════════════════════════════
-#  main
+#  Command-line document issuance
 # ═════════════════════════════════════════════════════════════════
 
-def main():
+def _build_cli_parser():
+    """Create the parser used by both python and the frozen executable."""
+    parser = argparse.ArgumentParser(
+        prog=Path(sys.argv[0]).name or "WordCloner",
+        description="Issue a WordCloner document from a template or Excel workbook.",
+        epilog=(
+            "Single document:\n"
+            '  WordCloner.exe -i "letter_template.docx" -o "output.docx" '
+            '-v "A. User" " " "Operations"\n\n'
+            "Count template variables:\n"
+            '  WordCloner.exe -i "letter_template.docx" --count\n\n'
+            "Bulk from Excel:\n"
+            '  WordCloner.exe -i "letter_template.docx" --excel "data.xlsx" '
+            "--header-row"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-i", "--input", dest="input_path", required=True, metavar="DOCX",
+        help="Path to the .docx template.",
+    )
+    parser.add_argument(
+        "-o", "--output", dest="output_path", default=None, metavar="PATH",
+        help=(
+            "Output .docx file for single issuance; output folder for --excel "
+            "(default: settings output folder / Bulk Issuance)."
+        ),
+    )
+    parser.add_argument(
+        "-v", "--values", dest="values", nargs="*", default=None,
+        metavar="VALUE",
+        help=(
+            'Values in first-appearance order. Pass a quoted single space (" ") '
+            "for an intentionally blank variable."
+        ),
+    )
+    parser.add_argument(
+        "-w", "--wrapper", dest="wrapper", default=None, metavar="TEXT",
+        help="Use TEXT as the placeholder wrapper for this run (default: settings.json).",
+    )
+    parser.add_argument(
+        "-x", "--excel", dest="excel_path", default=None, metavar="XLSX",
+        help="Read one output filename and the variable values from each Excel row.",
+    )
+    parser.add_argument(
+        "--header-row", action="store_true",
+        help="Skip row 1 of the active worksheet because it contains column headings.",
+    )
+    parser.add_argument(
+        "-c", "--count", action="store_true",
+        help="Print the number of unique variables in the template and exit.",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Replace an existing single-document output file.",
+    )
+    return parser
+
+
+def _cli_output_path(raw_path, parser):
+    path = Path(raw_path).expanduser()
+    if path.exists() and path.is_dir():
+        parser.error(tr(T.cli_output_is_directory, path=path))
+    if path.suffix.lower() != ".docx":
+        path = Path(str(path) + ".docx")
+    return path
+
+
+def cli_main(argv=None):
+    """Handle CLI operations without constructing QApplication or a GUI page."""
+    global _FORCE_ENGLISH_UI
+    _FORCE_ENGLISH_UI = True
+    parser = _build_cli_parser()
+    args = parser.parse_args(argv)
+
+    if not HAS_DOCX:
+        parser.error(tr(T.no_docx))
+
+    try:
+        migrate_legacy_data()
+        load_settings()
+    except Exception as exc:
+        parser.error(tr(T.cli_read_error, err=exc))
+
+    if args.wrapper is not None:
+        if not args.wrapper.strip():
+            parser.error(tr(T.err_wrapper_empty))
+        SETTINGS["placeholder_wrapper"] = args.wrapper
+
+    input_path = Path(args.input_path).expanduser()
+    if not input_path.exists():
+        parser.error(tr(T.err_template_not_found, path=input_path))
+    if not input_path.is_file():
+        parser.error(tr(T.cli_input_not_file, path=input_path))
+    if input_path.suffix.lower() != ".docx":
+        parser.error(tr(T.cli_input_not_docx, path=input_path))
+    input_path = input_path.resolve()
+
+    wrapper = _get_wrapper()
+    if not isinstance(wrapper, str) or not wrapper:
+        parser.error(tr(T.err_wrapper_empty))
+
+    try:
+        properties = extract_placeholders(str(input_path))
+    except WrapperCountError as exc:
+        parser.error(str(exc))
+    except Exception as exc:
+        parser.error(tr(T.cli_read_error, err=exc))
+    variable_names = list(properties.keys())
+
+    if args.count:
+        if (args.output_path is not None or args.values is not None
+                or args.excel_path is not None or args.header_row or args.force):
+            parser.error(tr(T.cli_count_mode_conflict))
+        print(tr(T.cli_variable_count, count=len(variable_names)))
+        return 0
+
+    if args.header_row and args.excel_path is None:
+        parser.error(tr(T.cli_header_only_excel))
+
+    if args.excel_path is not None:
+        if args.values is not None or args.force:
+            parser.error(tr(T.cli_excel_mode_conflict))
+        if not variable_names:
+            parser.error(tr(T.cli_no_variables, w=wrapper))
+        if not HAS_EXCEL:
+            parser.error(tr(T.batch_excel_library_missing))
+
+        try:
+            records = read_excel_records(
+                args.excel_path, variable_names, header_row=args.header_row
+            )
+        except ExcelImportError as exc:
+            parser.error(str(exc))
+
+        if args.output_path:
+            batch_directory = Path(args.output_path).expanduser()
+            if batch_directory.suffix.lower() == ".docx":
+                parser.error(tr(
+                    T.cli_excel_output_folder_error, path=batch_directory
+                ))
+            if batch_directory.exists() and not batch_directory.is_dir():
+                parser.error(tr(
+                    T.cli_excel_output_folder_error, path=batch_directory
+                ))
+        else:
+            configured_output = str(SETTINGS.get("output_dir") or "").strip()
+            output_root = Path(
+                configured_output or (Path.home() / "Desktop")
+            ).expanduser()
+            batch_directory = output_root / tr(T.batch_output_folder)
+
+        try:
+            batch_directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            parser.error(tr(T.batch_output_folder_error, err=exc))
+
+        reserved_names = set()
+        for row_number, output_name, replacements in records:
+            output_file = _safe_batch_filename(
+                output_name, batch_directory, reserved_names
+            )
+            try:
+                _save_docx_atomically(
+                    input_path,
+                    batch_directory / output_file,
+                    replacements,
+                    {},
+                    overwrite=False,
+                )
+            except Exception as exc:
+                parser.error(tr(
+                    T.batch_row_write_error, row=row_number, err=exc
+                ))
+
+        print(tr(T.batch_success, count=len(records), path=batch_directory))
+        return 0
+
+    if not variable_names:
+        parser.error(tr(T.cli_no_variables, w=wrapper))
+    if not args.output_path:
+        parser.error(tr(T.cli_output_required))
+
+    values = args.values or []
+    if len(values) > len(variable_names):
+        parser.error(tr(
+            T.cli_too_many_values,
+            expected=len(variable_names),
+            actual=len(values),
+        ))
+    if len(values) < len(variable_names):
+        parser.error(tr(
+            T.cli_too_few_values,
+            expected=len(variable_names),
+            actual=len(values),
+        ))
+    if any(value == "" for value in values):
+        parser.error(tr(T.cli_empty_value))
+
+    replacements = dict(zip(variable_names, values))
+    output_path = _cli_output_path(args.output_path, parser).resolve()
+    if output_path == input_path:
+        parser.error(tr(T.cli_output_is_input))
+    if output_path.exists() and not args.force:
+        parser.error(tr(T.cli_output_exists, path=output_path))
+
+    try:
+        _save_docx_atomically(
+            input_path, output_path, replacements, {}, overwrite=args.force
+        )
+    except FileExistsError:
+        parser.error(tr(T.cli_output_exists, path=output_path))
+    except Exception as exc:
+        parser.error(tr(T.cli_write_error, err=exc))
+
+    print(tr(T.cli_success, path=output_path, count=len(variable_names)))
+    return 0
+
+
+def _attach_cli_console_if_needed():
+    """Attach CLI streams to a parent console if this launcher lacks them.
+
+    The recommended Windows spec is console-enabled with PyInstaller's
+    hide_console='hide-late': this lets CMD wait for CLI completion while an
+    owned console is hidden for GUI startup. This helper is only a fallback
+    for launchers that start the CLI without standard streams; attaching a
+    windowed executable cannot make its parent CMD wait synchronously.
+    """
+    if sys.platform != "win32" or (sys.stdout is not None and sys.stderr is not None):
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.AttachConsole(-1)  # ATTACH_PARENT_PROCESS
+        if not kernel32.GetConsoleWindow():
+            kernel32.AllocConsole()
+        if sys.stdin is None:
+            sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+        if sys.stdout is None:
+            sys.stdout = open(
+                "CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1
+            )
+        if sys.stderr is None:
+            sys.stderr = open(
+                "CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1
+            )
+    except Exception:
+        pass
+
+
+# ═════════════════════════════════════════════════════════════════
+#  GUI startup
+# ═════════════════════════════════════════════════════════════════
+
+def gui_main():
     migrate_legacy_data()
 
-    # ─── تشخیص اولین اجرا قبل از بارگذاری settings ───
     first_run = not SETTINGS_JSON.exists()
 
     load_settings()
@@ -3613,10 +4758,10 @@ def main():
         except Exception as e:
             print(f"[AppUserModelID] failed: {e}")
 
-    app = QApplication(sys.argv)
+    app = QApplication([sys.argv[0]])
     icon_path = APP_ROOT / "app.ico"
     app.setWindowIcon(QIcon(str(icon_path)))
-    app.setQuitOnLastWindowClosed(True)
+    app.setQuitOnLastWindowClosed(False)
 
     for fam in ("Vazirmatn", "IRANSans", "Tahoma", "Segoe UI"):
         f = QFont(fam, 10)
@@ -3624,15 +4769,12 @@ def main():
             app.setFont(f)
             break
 
-    # ─── اولین اجرا: انتخاب زبان ───
     if first_run:
         dlg = LanguageSelectDialog()
         if dlg.exec() == QDialog.Accepted and dlg.selected_language:
             SETTINGS["language"] = dlg.selected_language
-        # در غیر این صورت (بستن دیالوگ) زبان پیش‌فرض (fa) باقی می‌ماند.
         save_settings()
 
-    # setLayoutDirection پس از دیالوگ تا دیالوگ LTR خالص بماند.
     app.setLayoutDirection(_dir())
 
     current = [None]
@@ -3674,7 +4816,23 @@ def main():
         return win
 
     current[0] = create_window()
-    sys.exit(app.exec())
+    return app.exec()
+
+
+def main(argv=None):
+    """Dispatch to CLI when arguments are supplied; otherwise launch the GUI.
+
+    This same entry point is used by the Python console command and the frozen
+    WordCloner.exe, so opening the EXE without arguments starts the GUI.
+    """
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments == ["--gui"]:
+        return gui_main()
+    if arguments:
+        _attach_cli_console_if_needed()
+        return cli_main(arguments)
+    return gui_main()
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

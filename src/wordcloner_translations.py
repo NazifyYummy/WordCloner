@@ -89,6 +89,99 @@ class T:
     variable_values = _entry("مقادیر متغیرها", "Variable Values")
     confirm_save = _entry("تأیید و ثبت قالب", "Confirm and Register Template")
     confirm_issue = _entry("تأیید و صدور نامه", "Confirm and Issue Letter")
+    batch_excel_issue = _entry(
+        "صدور جمعی از اکسل", "Bulk Issue from Excel"
+    )
+    batch_issue_title = _entry(
+        "صدور جمعی از اکسل", "Bulk Issue from Excel"
+    )
+    batch_explanation = _entry(
+        "در شیت فعال اکسل، ستون اول نام فایل Word خروجی است. "
+        "ستون دوم به متغیر اول، ستون سوم به متغیر دوم و به همین ترتیب "
+        "به همهٔ متغیرهای قالب اختصاص دارد. هر ردیف یک سند می‌سازد.\n"
+        "سلول خالی برای متغیر خالی پذیرفته می‌شود. می‌توانید سطر اول را "
+        "عنوان ستون‌ها قرار دهید و گزینهٔ مربوط را فعال کنید.",
+        "In the active Excel sheet, column 1 is the output Word filename. "
+        "Column 2 maps to the first template variable, column 3 to the second, "
+        "and so on. Each row creates one document.\n"
+        "An empty cell leaves that variable blank. You may use row 1 for column "
+        "headings and enable the header-row option.",
+    )
+    batch_columns_title = _entry(
+        "ترتیب ستون‌ها در اکسل", "Excel column mapping"
+    )
+    batch_format_title = _entry(
+        "قالب‌بندی هر متغیر در سندهای خروجی", "Formatting for each variable"
+    )
+    batch_mapping_filename = _entry(
+        "ستون {column}: نام فایل خروجی",
+        "Column {column}: output filename",
+    )
+    batch_mapping_variable = _entry(
+        "ستون {column}: متغیر «{name}»",
+        "Column {column}: variable “{name}”",
+    )
+    batch_header_row = _entry(
+        "سطر اول عنوان ستون‌هاست (در پردازش نادیده گرفته شود)",
+        "Row 1 contains headings (skip it)",
+    )
+    batch_drop_hint = _entry(
+        "فایل اکسل را اینجا رها کنید\nیا برای انتخاب از رایانه کلیک کنید",
+        "Drop an Excel workbook here\nor click to browse your computer",
+    )
+    batch_excel_filter = _entry(
+        "فایل اکسل (*.xlsx *.xlsm)", "Excel workbook (*.xlsx *.xlsm)"
+    )
+    batch_confirm = _entry(
+        "تأیید و صدور جمعی", "Confirm and Create Documents"
+    )
+    batch_output_folder = _entry("صدور جمعی", "Bulk Issuance")
+    batch_excel_missing = _entry(
+        "ابتدا فایل اکسل را انتخاب یا در کادر مشخص‌شده رها کنید.",
+        "Select or drop an Excel workbook first.",
+    )
+    batch_excel_library_missing = _entry(
+        "کتابخانهٔ openpyxl نصب نشده است. برای نصب، دستور pip install openpyxl را اجرا کنید.",
+        "The openpyxl library is missing. Install it with: pip install openpyxl",
+    )
+    batch_excel_not_found = _entry(
+        "فایل اکسل یافت نشد:\n{path}",
+        "Excel workbook not found:\n{path}",
+    )
+    batch_excel_type_error = _entry(
+        "فایل باید با قالب .xlsx یا .xlsm باشد:\n{path}",
+        "The workbook must be an .xlsx or .xlsm file:\n{path}",
+    )
+    batch_excel_read_error = _entry(
+        "خواندن فایل اکسل ناموفق بود:\n{err}",
+        "Could not read the Excel workbook:\n{err}",
+    )
+    batch_no_data_rows = _entry(
+        "در شیت فعال، ردیف داده‌ای برای صدور پیدا نشد.",
+        "No data rows were found in the active worksheet.",
+    )
+    batch_filename_empty = _entry(
+        "نام فایل خروجی در سطر {row} خالی است.",
+        "The output filename is empty on row {row}.",
+    )
+    batch_extra_columns = _entry(
+        "سطر {row} در ستون {column} دادهٔ اضافه دارد. برای {variables} متغیر، "
+        "پس از ستون نام فایل فقط {variables} ستون متغیر لازم است.",
+        "Row {row} has extra data in column {column}. With {variables} variable(s), "
+        "only {variables} variable column(s) may follow the filename column.",
+    )
+    batch_output_folder_error = _entry(
+        "پوشهٔ خروجی صدور جمعی ایجاد یا قابل‌استفاده نیست:\n{err}",
+        "Could not create or access the bulk output folder:\n{err}",
+    )
+    batch_row_write_error = _entry(
+        "صدور سند در سطر {row} ناموفق بود:\n{err}",
+        "Could not issue the document on row {row}:\n{err}",
+    )
+    batch_success = _entry(
+        "صدور جمعی انجام شد. {count} سند در پوشهٔ زیر ذخیره شد:\n{path}",
+        "Bulk issuance completed. {count} document(s) were saved in:\n{path}",
+    )
     ph_letter_name = _entry(
         "برای مثال: نامهٔ پذیرش مقاله", "e.g., Article Acceptance Letter"
     )
@@ -103,6 +196,11 @@ class T:
 
     # Settings
     app_language = _entry("زبان رابط کاربری", "Interface Language")
+    guide = _entry("  راهنما", "  Guide")
+    guide_tooltip = _entry(
+        "اجرای راهنمای ویدیویی WordCloner.",
+        "Open the WordCloner video guide.",
+    )
     output_path = _entry(
         "محل ذخیرهٔ نامه‌های صادرشده", "Output Folder for Issued Letters"
     )
@@ -208,4 +306,102 @@ class T:
         "The number of placeholder wrappers “{w}” in the document must be even "
         "(found: {n}).\nAn opening or closing wrapper may be missing.\n"
         "Write each variable as {w}variable_name{w}.",
+    )
+
+    # Command-line document issuance
+    cli_values_required = _entry(
+        "مقدارهای متغیرها را با گزینهٔ -v وارد کنید.",
+        "Provide the variable values with -v.",
+    )
+    cli_too_many_values = _entry(
+        "تعداد مقدارهای واردشده ({actual}) از تعداد متغیرهای قالب ({expected}) بیشتر است.",
+        "Too many values: supplied {actual}, but the template has {expected} unique variable(s).",
+    )
+    cli_too_few_values = _entry(
+        "تعداد مقدارهای واردشده ({actual}) از تعداد متغیرهای قالب ({expected}) کمتر است.\n"
+        "برای متغیرِ خالی، جایگاه آن را حذف نکنید؛ به‌جای آن دقیقاً یک فاصله وارد کنید: \" \".",
+        "Too few values: supplied {actual}, but the template has {expected} unique variable(s).\n"
+        "Do not omit a blank variable's position; pass one space instead: \" \".",
+    )
+    cli_empty_value = _entry(
+        "برای مقدار خالی از یک فاصلهٔ داخل نقل‌قول استفاده کنید (\" \")، نه رشتهٔ خالی (\"\").",
+        "Use a quoted single space (\" \"), not an empty string (\"\"), for a blank value.",
+    )
+    cli_variable_count = _entry(
+        "تعداد متغیرهای یکتای قالب: {count}",
+        "Unique variables in template: {count}",
+    )
+    cli_count_mode_conflict = _entry(
+        "گزینهٔ --count فقط با -i و -w قابل استفاده است؛ آن را با گزینه‌های صدور ترکیب نکنید.",
+        "--count accepts -i and optional -w only; do not combine it with issuance options.",
+    )
+    cli_excel_mode_conflict = _entry(
+        "برای صدور از اکسل، گزینه‌های -v و --force را وارد نکنید؛ مقدارها از فایل اکسل خوانده می‌شوند و نام‌های تکراری خودکار یکتا می‌شوند.",
+        "Do not combine --excel with -v or --force; values come from the workbook and duplicate filenames are made unique.",
+    )
+    cli_output_required = _entry(
+        "برای صدور تکی، مسیر فایل خروجی را با گزینهٔ -o مشخص کنید.",
+        "For a single document, specify the output file with -o.",
+    )
+    cli_header_only_excel = _entry(
+        "گزینهٔ --header-row فقط همراه با --excel قابل استفاده است.",
+        "--header-row can only be used with --excel.",
+    )
+    cli_excel_output_folder_error = _entry(
+        "در حالت اکسل، گزینهٔ -o باید مسیر یک پوشه باشد، نه فایل .docx:\n{path}",
+        "In Excel mode, -o must be a folder path, not a .docx file:\n{path}",
+    )
+    cli_no_variables = _entry(
+        "در فایل قالب هیچ متغیری پیدا نشد. مطمئن شوید متغیرها با نشانگر «{w}» نوشته شده‌اند.",
+        "The template contains no variables. Check that each variable is wrapped with “{w}”.",
+    )
+    cli_value_count = _entry(
+        "قالب {expected} متغیر یکتا دارد، اما {actual} مقدار وارد شده است.\n"
+        "مقادیر را به ترتیب نخستین ظهور متغیرها در سند وارد کنید.",
+        "The template has {expected} unique variable(s), but {actual} value(s) were supplied.\n"
+        "Enter values in the order the variables first appear in the document.",
+    )
+    cli_input_not_file = _entry(
+        "مسیر ورودی یک فایل نیست:\n{path}",
+        "The input path is not a file:\n{path}",
+    )
+    cli_input_not_docx = _entry(
+        "فایل ورودی باید با قالب .docx باشد:\n{path}",
+        "The input must be a .docx Word document:\n{path}",
+    )
+    cli_output_is_input = _entry(
+        "مسیر فایل خروجی با فایل قالب یکسان است؛ فایل قالب بازنویسی نمی‌شود.",
+        "The output path is the same as the template; the template will not be overwritten.",
+    )
+    cli_output_is_directory = _entry(
+        "مسیر خروجی به یک پوشه اشاره می‌کند، نه فایل:\n{path}",
+        "The output path points to a directory, not a file:\n{path}",
+    )
+    cli_output_exists = _entry(
+        "فایل خروجی از قبل وجود دارد:\n{path}\nبرای جایگزینی آن، گزینهٔ --force را اضافه کنید.",
+        "The output file already exists:\n{path}\nUse --force to replace it.",
+    )
+    cli_output_directory_error = _entry(
+        "پوشهٔ خروجی ایجاد یا قابل دسترسی نشد:\n{err}",
+        "Could not create or access the output folder:\n{err}",
+    )
+    cli_read_error = _entry(
+        "خواندن فایل قالب ناموفق بود:\n{err}",
+        "Could not read the template:\n{err}",
+    )
+    cli_write_error = _entry(
+        "ذخیرهٔ فایل خروجی ناموفق بود:\n{err}",
+        "Could not save the output file:\n{err}",
+    )
+    cli_success = _entry(
+        "سند با موفقیت در این مسیر ذخیره شد:\n{path}\nتعداد متغیرها: {count}",
+        "Document created successfully:\n{path}\nVariables filled: {count}",
+    )
+    guide_not_found = _entry(
+        "فایل راهنمای ویدیویی یافت نشد:\n{path}",
+        "The video guide was not found:\n{path}",
+    )
+    guide_open_error = _entry(
+        "اجرای فایل راهنما ناموفق بود:\n{err}",
+        "Could not open the video guide:\n{err}",
     )

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wordcloner-letter-issuer"
+version = "1.1.0"
+description = "WordCloner desktop and command-line letter issuance tools"
+readme = "README_wordcloner_cli.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.5",
+    "python-docx>=0.8.11",
+    "openpyxl>=3.1",
+]
+
+[project.scripts]
+wordcloner = "WordCloner:main"
+
+[tool.setuptools]
+py-modules = [
+    "WordCloner",
+    "wordcloner_icons",
+    "wordcloner_paths",
+    "wordcloner_translations",
+]
+packages = [
+    "wordcloner_assets",
+    "wordcloner_assets.icons",
+]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+wordcloner_assets = "resources"
+"wordcloner_assets.icons" = "resources/icons"
+
+[tool.setuptools.package-data]
+wordcloner_assets = ["LUCIDE_LICENSE.txt"]
+"wordcloner_assets.icons" = ["*.svg", "manifest.json"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+build = ["pyinstaller>=6.6"]
