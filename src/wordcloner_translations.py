@@ -198,8 +198,20 @@ class T:
     app_language = _entry("زبان رابط کاربری", "Interface Language")
     guide = _entry("  راهنما", "  Guide")
     guide_tooltip = _entry(
-        "اجرای راهنمای ویدیویی WordCloner.",
-        "Open the WordCloner video guide.",
+        "بازکردن فایل ویدیویی راهنمای WordCloner با پخش‌کنندهٔ پیش‌فرض.",
+        "Open the local WordCloner video guide with the default player.",
+    )
+    launch_on_startup = _entry(
+        "اجرا هنگام روشن شدن کامپیوتر",
+        "Launch WordCloner at startup",
+    )
+    launch_on_startup_tooltip = _entry(
+        "در شروع Windows، برنامه در System Tray اجرا می‌شود و پنجره نمایش داده نمی‌شود. این گزینه به‌طور پیش‌فرض خاموش است.",
+        "At Windows sign-in, start WordCloner in the system tray without showing its window. This option is off by default.",
+    )
+    startup_update_error = _entry(
+        "تنظیم اجرای خودکار WordCloner در Windows ناموفق بود:\n{err}",
+        "Could not update the Windows startup setting:\n{err}",
     )
     output_path = _entry(
         "محل ذخیرهٔ نامه‌های صادرشده", "Output Folder for Issued Letters"
@@ -398,10 +410,10 @@ class T:
         "Document created successfully:\n{path}\nVariables filled: {count}",
     )
     guide_not_found = _entry(
-        "فایل راهنمای ویدیویی یافت نشد:\n{path}",
-        "The video guide was not found:\n{path}",
+        "فایل ویدیوی راهنمای WordCloner یافت نشد:\n{path}",
+        "WordCloner guide video was not found:\n{path}",
     )
     guide_open_error = _entry(
-        "اجرای فایل راهنما ناموفق بود:\n{err}",
-        "Could not open the video guide:\n{err}",
+        "بازکردن فایل ویدیوی راهنما ناموفق بود:\n{err}",
+        "Could not open the guide video:\n{err}",
     )

@@ -6,9 +6,7 @@ from pathlib import Path
 # SPECPATH is supplied by PyInstaller and identifies the spec file's directory.
 project_root = Path(SPECPATH or ".").resolve()
 
-# Keep the external resource folders beside WordCloner.exe in the onedir build.
-# The Guide directory is optional at build time; if present, both language
-# videos are copied with it.
+# Keep resources and any local Guide video files beside WordCloner.exe in the onedir build.
 datas = []
 for folder_name in ("resources", "Guide"):
     folder_path = project_root / folder_name
@@ -39,7 +37,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="wordcloner",
+    name="WordCloner",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

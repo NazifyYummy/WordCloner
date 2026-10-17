@@ -6,6 +6,7 @@
 
 import argparse
 import os
+import subprocess
 import sys
 import tempfile
 from datetime import date, datetime
@@ -58,6 +59,7 @@ from wordcloner_paths import (
 )
 
 # ═════════════════════════════════════════════════════════════════
+
 #  Settings
 # ═════════════════════════════════════════════════════════════════
 
@@ -65,12 +67,13 @@ DEFAULT_SETTINGS = {
     "output_dir": str(Path.home() / "Desktop"),
     "placeholder_wrapper": '##',
     "quick_access": [],
-    "language": "en",     
+    "language": "fa",     # fa | en
     "window_size": [720, 600],
     "window_maximized": False,
+    "launch_on_startup": False,
 }
 SETTINGS = dict(DEFAULT_SETTINGS)
-_FORCE_ENGLISH_UI = False
+
 
 def load_settings():
     global SETTINGS
@@ -84,7 +87,9 @@ def load_settings():
                 if not isinstance(SETTINGS.get("quick_access"), list):
                     SETTINGS["quick_access"] = []
                 if SETTINGS.get("language") not in ("fa", "en"):
-                    SETTINGS["language"] = "en"
+                    SETTINGS["language"] = "fa"
+                if not isinstance(SETTINGS.get("launch_on_startup"), bool):
+                    SETTINGS["launch_on_startup"] = False
         except Exception as e:
             print(f"[error] reading settings: {e}")
 
@@ -98,6 +103,69 @@ def save_settings():
         print(f"[error] saving settings: {e}")
 
 
+STARTUP_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+STARTUP_VALUE_NAME = "WordCloner"
+
+
+def _windows_startup_command():
+    """Return the command Windows should run at sign-in, without showing GUI."""
+    executable = Path(sys.executable).resolve()
+    command_parts = [str(executable)]
+
+    if not getattr(sys, "frozen", False):
+        # Prefer pythonw.exe for source runs so the startup entry doesn't flash
+        # a console window. Fall back to the active interpreter if unavailable.
+        if executable.name.lower() == "python.exe":
+            pythonw = executable.with_name("pythonw.exe")
+            if pythonw.is_file():
+                command_parts[0] = str(pythonw)
+        command_parts.append(str(Path(__file__).resolve()))
+
+    command_parts.append("--startup")
+    return subprocess.list2cmdline(command_parts)
+
+
+def _set_windows_startup(enabled):
+    """Create/remove the current user's Windows Run entry."""
+    if sys.platform != "win32":
+        raise OSError("Automatic startup is supported only on Windows.")
+
+    import winreg
+
+    key = winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER,
+        STARTUP_RUN_KEY,
+        0,
+        winreg.KEY_SET_VALUE,
+    )
+    try:
+        if enabled:
+            winreg.SetValueEx(
+                key,
+                STARTUP_VALUE_NAME,
+                0,
+                winreg.REG_SZ,
+                _windows_startup_command(),
+            )
+        else:
+            try:
+                winreg.DeleteValue(key, STARTUP_VALUE_NAME)
+            except FileNotFoundError:
+                pass
+    finally:
+        winreg.CloseKey(key)
+
+
+def _sync_windows_startup_from_settings():
+    """Repair a missing/stale Run entry without blocking normal GUI startup."""
+    if sys.platform != "win32":
+        return
+    try:
+        _set_windows_startup(SETTINGS.get("launch_on_startup") is True)
+    except Exception as exc:
+        print(f"[startup] Could not synchronize Windows startup setting: {exc}")
+
+
 # ═════════════════════════════════════════════════════════════════
 #  i18n
 # ═════════════════════════════════════════════════════════════════
@@ -109,23 +177,17 @@ LANG_MAP = {"fa": "persian", "en": "english"}
 def tr(item, **kwargs):
     if not isinstance(item, dict):
         return str(item)
-
-    if _FORCE_ENGLISH_UI:
-        value = item.get("english")
-        if value is None:
-            value = item.get("persian", "")
-    else:
-        key = LANG_MAP.get(SETTINGS.get("language", "fa"), "persian")
-        value = item.get(key)
-        if value is None:
-            value = item.get("persian", "")
-
+    key = LANG_MAP.get(SETTINGS.get("language", "fa"), "persian")
+    value = item.get(key)
+    if value is None:
+        value = item.get("persian", "")
     if kwargs:
         try:
             value = value.format(**kwargs)
         except Exception:
             pass
     return value
+
 
 def _is_rtl():
     return SETTINGS.get("language", "fa") == "fa"
@@ -134,7 +196,6 @@ def _is_rtl():
 def _dir():
     return Qt.RightToLeft if _is_rtl() else Qt.LeftToRight
 
-# ═════════════════════════════════════════════════════════════════
 #  Colors (only green theme)
 # ═════════════════════════════════════════════════════════════════
 
@@ -174,6 +235,7 @@ def apply_color_button_style(btn, hex_color):
     """)
 
 # ═════════════════════════════════════════════════════════════════
+
 #  ComboWithArrow
 # ═════════════════════════════════════════════════════════════════
 
@@ -1194,12 +1256,15 @@ class TitleBar(QFrame):
         self.setFixedHeight(46)
         self.setObjectName("titleBar")
 
+        # ── Force LTR layout so buttons stay on the right ──
+        # (otherwise RTL app direction would mirror them to the left)
         self.setLayoutDirection(Qt.LeftToRight)
         
         lay = QHBoxLayout(self)
         lay.setContentsMargins(16, 0, 8, 0)
         lay.setSpacing(10)
 
+        # ── Left: icon + title ──
         ico = QLabel()
         ico.setPixmap(icon_document(20, "#FFFFFF").pixmap(QSize(20, 20)))
         ico.setStyleSheet("background: transparent;")
@@ -1213,6 +1278,7 @@ class TitleBar(QFrame):
         lay.addWidget(t)
         lay.addStretch()
 
+        # ── Right: minimize / maximize / close ──
         b_min = self._btn("", C_GREEN)
         b_max = self._btn("", C_GREEN)
         b_cls = self._btn("", C_RED)
@@ -2475,6 +2541,7 @@ class HomePage(QWidget):
 
         outer.addSpacing(4)
 
+        # Scroll container for the whole main area (small screens)
         main_scroll = QScrollArea()
         main_scroll.setWidgetResizable(True)
         main_scroll.setFrameShape(QFrame.NoFrame)
@@ -2559,11 +2626,11 @@ class HomePage(QWidget):
             SETTINGS["quick_access"] = new_names
             save_settings()
             self.quick_access.set_quick_names(new_names)
-            self.quick_access_changed.emit()      
+            self.quick_access_changed.emit()      # ← جدید
 
     def _open_guide(self):
         language = SETTINGS.get("language", "fa")
-        guide_filename = (
+        video_name = (
             "English_guide.mp4" if language == "en" else "Persian_guide.mp4"
         )
         program_dir = (
@@ -2571,20 +2638,18 @@ class HomePage(QWidget):
             if getattr(sys, "frozen", False)
             else Path(__file__).resolve().parent
         )
-        guide_path = program_dir / "Guide" / guide_filename
+        video_path = program_dir / "Guide" / video_name
 
-        if not guide_path.is_file():
+        if not video_path.is_file():
             ThemedDialog.warning(
-                self, tr(T.error), tr(T.guide_not_found, path=guide_path)
+                self, tr(T.error), tr(T.guide_not_found, path=video_path)
             )
             return
 
         try:
-            if sys.platform == "win32":
-                os.startfile(str(guide_path))
-            else:
-                if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(guide_path))):
-                    raise OSError("The operating system did not open the video file.")
+            video_url = QUrl.fromLocalFile(str(video_path.resolve()))
+            if not QDesktopServices.openUrl(video_url):
+                raise OSError("The default video player did not accept the file.")
         except Exception as exc:
             ThemedDialog.error(
                 self, tr(T.error), tr(T.guide_open_error, err=exc)
@@ -2606,6 +2671,7 @@ class AddLetterPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
+        # ─ Header (static) ─
         header_wrap = QWidget()
         header_wrap.setStyleSheet("background: transparent;")
         hw_lay = QHBoxLayout(header_wrap)
@@ -2635,6 +2701,7 @@ class AddLetterPage(QWidget):
         hw_lay.addWidget(title); hw_lay.addStretch(); hw_lay.addWidget(back_btn)
         root.addWidget(header_wrap)
 
+        # ─ Scrollable body ─
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -2694,6 +2761,7 @@ class AddLetterPage(QWidget):
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
 
+        # ─ Footer (static) ─
         footer_wrap = QWidget()
         footer_wrap.setStyleSheet("background: transparent;")
         fw_lay = QVBoxLayout(footer_wrap)
@@ -2759,6 +2827,7 @@ class AddLetterPage(QWidget):
                 ThemedDialog.error(self, tr(T.err_wrapper_count), str(we))
                 return
 
+            # ─── هیچ متغیری در فایل پیدا نشد → ذخیره نکن ───
             if not props:
                 try:
                     dst.unlink()
@@ -2803,6 +2872,7 @@ class EditLetterPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
+        # ─ Header (static) ─
         header_wrap = QWidget()
         header_wrap.setStyleSheet("background: transparent;")
         hw_lay = QHBoxLayout(header_wrap)
@@ -2856,6 +2926,7 @@ class EditLetterPage(QWidget):
         hw_lay.addWidget(back_btn)
         root.addWidget(header_wrap)
 
+        # ─ Everything else in a scroll ─
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
@@ -2920,6 +2991,7 @@ class EditLetterPage(QWidget):
         self.scroll.setWidget(self.scroll_body)
         root.addWidget(self.scroll, 1)
 
+        # ─ Footer (static): confirm button ─
         footer_wrap = QWidget()
         footer_wrap.setStyleSheet("background: transparent;")
         fw_lay = QHBoxLayout(footer_wrap)
@@ -3012,6 +3084,7 @@ class EditLetterPage(QWidget):
         dlg = QColorDialog(QColor(cur), self)
         dlg.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
         dlg.setOption(QColorDialog.ColorDialogOption.ShowAlphaChannel, False)
+        # QColorDialog keeps a conventional left-to-right layout in both app languages.
         dlg.setLayoutDirection(Qt.LeftToRight)
         dlg.setWindowTitle(tr(T.pick_color))
         dlg.setAutoFillBackground(True)
@@ -3061,6 +3134,8 @@ class EditLetterPage(QWidget):
         """)
 
         def localize_color_dialog_labels():
+            # Force all already-created child controls to LTR as well; the
+            # parent application may use RTL for Persian pages.
             dlg.setLayoutDirection(Qt.LeftToRight)
             for control in dlg.findChildren(QWidget):
                 control.setLayoutDirection(Qt.LeftToRight)
@@ -3076,6 +3151,7 @@ class EditLetterPage(QWidget):
                 elif button_text == "cancel":
                     button.setText(tr(T.cancel))
 
+        # Run after Qt has created the non-native dialog controls.
         QTimer.singleShot(0, localize_color_dialog_labels)
 
         if dlg.exec():
@@ -3118,6 +3194,7 @@ class EditLetterPage(QWidget):
                 pass
         top.addWidget(size_combo)
 
+        # Bold
         bold_wrap = QWidget()
         bold_wrap.setStyleSheet("background: transparent;")
         bold_lay = QHBoxLayout(bold_wrap)
@@ -3133,6 +3210,7 @@ class EditLetterPage(QWidget):
         bold_lay.addWidget(bold_btn)
         top.addWidget(bold_wrap)
 
+        # Italic
         ital_wrap = QWidget()
         ital_wrap.setStyleSheet("background: transparent;")
         ital_lay = QHBoxLayout(ital_wrap)
@@ -3148,6 +3226,7 @@ class EditLetterPage(QWidget):
         ital_lay.addWidget(italic_btn)
         top.addWidget(ital_wrap)
 
+        # Color
         color_wrap = QWidget()
         color_wrap.setStyleSheet("background: transparent;")
         color_lay = QHBoxLayout(color_wrap)
@@ -3719,6 +3798,7 @@ class SettingsPage(QWidget):
 
         lf = QFont(); lf.setPointSize(10); lf.setBold(True)
 
+        # Language
         lang_lbl = QLabel(tr(T.app_language))
         lang_lbl.setFont(lf)
         lang_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
@@ -3741,6 +3821,7 @@ class SettingsPage(QWidget):
         lang_row.addStretch()
         lay.addLayout(lang_row); lay.addSpacing(2)
 
+        # Output dir
         out_lbl = QLabel(tr(T.output_path))
         out_lbl.setFont(lf)
         out_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
@@ -3794,6 +3875,7 @@ class SettingsPage(QWidget):
         out_wrap.addStretch()
         lay.addLayout(out_wrap); lay.addSpacing(2)
 
+        # Wrapper
         wrap_lbl = QLabel(tr(T.placeholder_wrapper))
         wrap_lbl.setFont(lf)
         wrap_lbl.setStyleSheet(f"color: {C_DARK_GREEN}; background: transparent;")
@@ -3828,6 +3910,28 @@ class SettingsPage(QWidget):
         hint.setStyleSheet(f"color: {C_MUTED}; background: transparent; font-size: 10px;")
         hint.setWordWrap(True)
         lay.addWidget(hint)
+
+        self.launch_startup_check = QCheckBox(tr(T.launch_on_startup))
+        self.launch_startup_check.setChecked(
+            SETTINGS.get("launch_on_startup") is True
+        )
+        self.launch_startup_check.setToolTip(tr(T.launch_on_startup_tooltip))
+        self.launch_startup_check.setLayoutDirection(_dir())
+        self.launch_startup_check.setStyleSheet(f"""
+            QCheckBox {{
+                color: {C_DARK_GREEN}; background: transparent;
+                font-size: 11px; spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 18px; height: 18px; border: 1px solid {C_BORDER};
+                border-radius: 4px; background: #FFFFFF;
+            }}
+            QCheckBox::indicator:checked {{
+                background: {C_GREEN}; border-color: {C_GREEN};
+            }}
+        """)
+        if sys.platform == "win32":
+            lay.addWidget(self.launch_startup_check)
 
         lay.addStretch()
 
@@ -3904,9 +4008,23 @@ class SettingsPage(QWidget):
             ThemedDialog.warning(self, tr(T.error), tr(T.err_wrapper_empty))
             return
 
+        new_launch_on_startup = False
+        if sys.platform == "win32":
+            new_launch_on_startup = self.launch_startup_check.isChecked()
+            try:
+                _set_windows_startup(new_launch_on_startup)
+            except Exception as exc:
+                ThemedDialog.error(
+                    self,
+                    tr(T.error),
+                    tr(T.startup_update_error, err=exc),
+                )
+                return
+
         SETTINGS["language"] = new_lang
         SETTINGS["output_dir"] = new_output
         SETTINGS["placeholder_wrapper"] = new_wrapper
+        SETTINGS["launch_on_startup"] = new_launch_on_startup
         save_settings()
 
         self.saved.emit()
@@ -4052,11 +4170,13 @@ class MainWindow(QMainWindow):
     def _build_tray_menu(self):
         self.tray_menu.clear()
 
+        # ── باز کردن برنامه ──
         open_action = QAction(
             tr({"persian": "باز کردن برنامه", "english": "Open App"}), self)
         open_action.triggered.connect(self._show_from_tray)
         self.tray_menu.addAction(open_action)
 
+        # ── قالب‌های Quick Access ──
         qa_names = [n for n in SETTINGS.get("quick_access", []) if n]
         if qa_names:
             templates = load_templates()
@@ -4077,6 +4197,7 @@ class MainWindow(QMainWindow):
                             self._open_template_from_tray(n))
                     self.tray_menu.addAction(act)
 
+        # ── خروج ──
         self.tray_menu.addSeparator()
         exit_action = QAction(
             tr({"persian": "خروج", "english": "Exit"}), self)
@@ -4107,12 +4228,14 @@ class MainWindow(QMainWindow):
     def _on_tray_activated(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             if self.isVisible() and not self.isMinimized():
+                # کلیک روی آیکن وقتی پنجره باز است → پنهان کن
                 self.hide()
             else:
                 self._show_from_tray()
 
     def _quit_app(self):
         self._really_quit = True
+        # مستقیم از طریق QApplication خارج شو تا از closeEvent رد شویم.
         QApplication.instance().quit()
 
     def _apply_win32_styles(self):
@@ -4127,11 +4250,11 @@ class MainWindow(QMainWindow):
             hwnd = int(self.winId())
 
             style = GetWindowLong(hwnd, GWL_STYLE)
-            style |= WS_THICKFRAME      
-            style |= WS_CAPTION         
-            style |= WS_SYSMENU         
-            style |= WS_MINIMIZEBOX     
-            style |= WS_MAXIMIZEBOX     
+            style |= WS_THICKFRAME      # برای Resize و Snap
+            style |= WS_CAPTION         # برای Drag و Snap
+            style |= WS_SYSMENU         # برای منوی سیستم
+            style |= WS_MINIMIZEBOX     # برای مینیمایز
+            style |= WS_MAXIMIZEBOX     # برای مکسیمایز
             SetWindowLong(hwnd, GWL_STYLE, style)
         except Exception as e:
             print(f"[Aero Snap] init styles failed: {e}")
@@ -4150,9 +4273,13 @@ class MainWindow(QMainWindow):
                 WM_NCCALCSIZE = 0x0083
                 WM_NCHITTEST = 0x0084
 
+                # ─── حذف حاشیه‌های Non-Client تا عنوان بومی حذف شود،
+                #     اما استایل WS_THICKFRAME باقی بماند و Snap کار کند ───
                 if msg.message == WM_NCCALCSIZE:
+                    # مقدار 0 برگردانده می‌شود تا کل پنجره «Client Area» در نظر گرفته شود
                     return True, 0
 
+                # ─── تعیین نواحی Resize روی لبه‌ها ───
                 if msg.message == WM_NCHITTEST and not self.isMaximized():
                     x = ctypes.c_short(msg.lParam & 0xFFFF).value
                     y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
@@ -4188,6 +4315,7 @@ class MainWindow(QMainWindow):
 
         return super().nativeEvent(eventType, message)
 
+    # ─── فراخوانی _apply_win32_styles پس از نمایش پنجره ───
     def showEvent(self, e):
         super().showEvent(e)
         self._apply_win32_styles()
@@ -4316,10 +4444,12 @@ class MainWindow(QMainWindow):
         self._save_window_state()
 
         if not getattr(self, "_really_quit", False):
+            # ── فقط مخفی کن، برنامه در tray باقی می‌ماند ──
             event.ignore()
             self.hide()
             return
 
+        # ── خروج واقعی ──
         if hasattr(self, "tray_icon"):
             self.tray_icon.hide()
         super().closeEvent(event)
@@ -4347,6 +4477,7 @@ class MainWindow(QMainWindow):
 # ═════════════════════════════════════════════════════════════════
 
 class LangButton(QFrame):
+    """دکمه‌ی بزرگ انتخاب زبان با افکت hover."""
     clicked = Signal()
 
     def __init__(self, primary, secondary, parent=None):
@@ -4417,6 +4548,7 @@ class LangButton(QFrame):
 
 
 class LanguageSelectDialog(QDialog):
+    """دیالوگ انتخاب زبان که فقط در اولین اجرای برنامه نمایش داده می‌شود."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -4424,6 +4556,8 @@ class LanguageSelectDialog(QDialog):
             Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
+        # مستقل از زبان برنامه، این دیالوگ همیشه LTR است تا هر دو دکمه
+        # در جای متقارن دیده شوند.
         self.setLayoutDirection(Qt.LeftToRight)
         self.setFixedSize(460, 580)
 
@@ -4469,6 +4603,7 @@ class LanguageSelectDialog(QDialog):
         persian_btn.clicked.connect(lambda: self._choose("fa"))
         english_btn.clicked.connect(lambda: self._choose("en"))
 
+        # stretch factor = 1 ⇒ هر دکمه نیمی از فضای عمودی را می‌گیرد.
         v.addWidget(persian_btn, 1)
         v.addWidget(english_btn, 1)
 
@@ -4558,10 +4693,12 @@ def _cli_output_path(raw_path, parser):
 
 def cli_main(argv=None):
     """Handle CLI operations without constructing QApplication or a GUI page."""
-    global _FORCE_ENGLISH_UI
-    _FORCE_ENGLISH_UI = True
     parser = _build_cli_parser()
     args = parser.parse_args(argv)
+
+    # CLI messages are always English, independently of the saved GUI language.
+    # This is an in-memory presentation override; the CLI never saves it.
+    SETTINGS["language"] = "en"
 
     if not HAS_DOCX:
         parser.error(tr(T.no_docx))
@@ -4569,12 +4706,18 @@ def cli_main(argv=None):
     try:
         migrate_legacy_data()
         load_settings()
+        # load_settings() restores the user's GUI language, so reapply the
+        # CLI-only English override after reading settings.json.
+        SETTINGS["language"] = "en"
     except Exception as exc:
+        SETTINGS["language"] = "en"
         parser.error(tr(T.cli_read_error, err=exc))
 
     if args.wrapper is not None:
         if not args.wrapper.strip():
             parser.error(tr(T.err_wrapper_empty))
+        # A CLI wrapper override applies to this invocation only; it does not
+        # silently rewrite the user's persistent GUI settings.
         SETTINGS["placeholder_wrapper"] = args.wrapper
 
     input_path = Path(args.input_path).expanduser()
@@ -4736,6 +4879,8 @@ def _attach_cli_console_if_needed():
                 "CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1
             )
     except Exception:
+        # Leave the normal Python streams alone when running outside the
+        # expected Windows console environment.
         pass
 
 
@@ -4743,12 +4888,14 @@ def _attach_cli_console_if_needed():
 #  GUI startup
 # ═════════════════════════════════════════════════════════════════
 
-def gui_main():
+def gui_main(start_hidden=False):
     migrate_legacy_data()
 
+    # ─── تشخیص اولین اجرا قبل از بارگذاری settings ───
     first_run = not SETTINGS_JSON.exists()
 
     load_settings()
+    _sync_windows_startup_from_settings()
 
     if sys.platform == "win32":
         myappid = "com.wordcloner.letterissuance.1.0"
@@ -4758,10 +4905,15 @@ def gui_main():
         except Exception as e:
             print(f"[AppUserModelID] failed: {e}")
 
+    # Strip any launcher-specific arguments before Qt initializes.
     app = QApplication([sys.argv[0]])
     icon_path = APP_ROOT / "app.ico"
     app.setWindowIcon(QIcon(str(icon_path)))
     app.setQuitOnLastWindowClosed(False)
+
+    if start_hidden and not QSystemTrayIcon.isSystemTrayAvailable():
+        print("[startup] System tray is unavailable; showing the main window.")
+        start_hidden = False
 
     for fam in ("Vazirmatn", "IRANSans", "Tahoma", "Segoe UI"):
         f = QFont(fam, 10)
@@ -4769,12 +4921,16 @@ def gui_main():
             app.setFont(f)
             break
 
+    # ─── اولین اجرا: انتخاب زبان؛ در شروع مخفی dialog نمایش داده نشود ───
     if first_run:
-        dlg = LanguageSelectDialog()
-        if dlg.exec() == QDialog.Accepted and dlg.selected_language:
-            SETTINGS["language"] = dlg.selected_language
+        if not start_hidden:
+            dlg = LanguageSelectDialog()
+            if dlg.exec() == QDialog.Accepted and dlg.selected_language:
+                SETTINGS["language"] = dlg.selected_language
+            # در غیر این صورت زبان پیش‌فرض (fa) باقی می‌ماند.
         save_settings()
 
+    # setLayoutDirection پس از دیالوگ تا دیالوگ LTR خالص بماند.
     app.setLayoutDirection(_dir())
 
     current = [None]
@@ -4809,10 +4965,11 @@ def gui_main():
     def create_window():
         win = MainWindow()
         win.theme_changed.connect(restart)
-        if SETTINGS.get("window_maximized") is True:
-            win.showMaximized()
-        else:
-            win.show()
+        if not start_hidden:
+            if SETTINGS.get("window_maximized") is True:
+                win.showMaximized()
+            else:
+                win.show()
         return win
 
     current[0] = create_window()
@@ -4828,6 +4985,8 @@ def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments == ["--gui"]:
         return gui_main()
+    if arguments == ["--startup"]:
+        return gui_main(start_hidden=True)
     if arguments:
         _attach_cli_console_if_needed()
         return cli_main(arguments)
