@@ -1,12 +1,7 @@
-# PyInstaller build configuration for a single WordCloner.exe that supports
-# both GUI startup (no arguments) and CLI issuance/count/Excel (with -i/-o/-v/-x/--count).
 from pathlib import Path
 
-# PyInstaller executes spec files with its own globals; __file__ is not set.
-# SPECPATH is supplied by PyInstaller and identifies the spec file's directory.
 project_root = Path(SPECPATH or ".").resolve()
 
-# Keep resources and any local Guide video files beside WordCloner.exe in the onedir build.
 datas = []
 for folder_name in ("resources", "Guide"):
     folder_path = project_root / folder_name
@@ -14,9 +9,10 @@ for folder_name in ("resources", "Guide"):
         datas.append((str(folder_path), folder_name))
 
 icon_path = project_root / "app.ico"
-app_icon = str(icon_path) if icon_path.is_file() else None
-if icon_path.is_file():
-    datas.append((str(icon_path), "."))
+if not icon_path.is_file():
+    raise FileNotFoundError(f"Required application icon not found: {icon_path}")
+app_icon = str(icon_path)
+datas.append((str(icon_path), "."))
 
 a = Analysis(
     [str(project_root / "WordCloner.py")],
@@ -44,9 +40,6 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    # Build as a console app so CMD waits and CLI output stays attached.
-    # Hide the self-owned console on GUI/double-click startup; when launched
-    # from an existing CMD window, PyInstaller keeps that console visible.
     console=True,
     hide_console="hide-late",
     disable_windowed_traceback=False,

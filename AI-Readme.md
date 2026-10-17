@@ -1,3 +1,4 @@
+# If you have any question or any idea, you can contact me : M.J.Nazify.Yummy@gmail.com
 # Here is the source code:
 ## wordcloner.py
 '''
@@ -5626,13 +5627,15 @@ class T:
 
 # End of source code
 
+> **Historical snapshot notice:** The source blocks above and some of the older notes describe a previous release. The current-release overlay in section 22 and the live release files take precedence. In particular, do not infer the installed data location from the archived path-module excerpt.
+
 # 🤖 AI-Readme.md — WordCloner Knowledge Base for AI Assistants
 
 > **📌 Purpose of this file**
 >
 > This document is a **comprehensive context primer** for any AI assistant (ChatGPT, Claude, Gemini, DeepSeek, local LLMs, etc.) that is asked a question about the **WordCloner** project.
 >
-> When a user or developer sends you this file, treat it as the **authoritative reference** for how WordCloner is structured, how it behaves, and how to extend it. Prefer the information here over generic assumptions.
+> When a user or developer sends you this file, use it as a project context guide, but treat the **Current Release Overlay** (section 22) and the supplied release files as authoritative when they differ from older source snapshots or notes. User-confirmed installed behavior must not be replaced by assumptions from a historical path implementation.
 >
 > **How to use it**
 >
@@ -5667,6 +5670,7 @@ class T:
 19. [Debugging & Diagnostics](#19--debugging--diagnostics)
 20. [Glossary](#20--glossary)
 21. [How an AI Should Answer Questions](#21--how-an-ai-should-answer-questions)
+22. [Current Release Overlay](#22--current-release-overlay)
 
 ---
 
@@ -5682,9 +5686,10 @@ class T:
 
 **Primary design goal:** drastically reduce the time required to issue **repetitive letters and circulars (ابلاغیه)** in administrative offices and departments. The same `.docx` template can be reused hundreds of times with different variable values, either manually (GUI), via Excel (bulk mode), or via the CLI.
 
-**Two execution modes:**
-- **GUI mode** — launched when the executable is started **without arguments**.
-- **CLI mode** — launched when **any argument** is passed (or explicitly with `--gui` for the GUI).
+**Execution modes:**
+- **GUI mode** — launched without arguments or with `--gui`.
+- **Startup-hidden GUI** — the internal `--startup` entry starts the GUI with the main window hidden and the system tray initialized.
+- **CLI mode** — launched for normal command-line options such as `-i`, `--count`, or `--excel`.
 
 **Key user-facing concepts:**
 - **Template** — a `.docx` file containing placeholder variables wrapped by a marker (default `##`).
@@ -5702,7 +5707,7 @@ class T:
                  │  (dispatch GUI vs CLI)            │
                  └────────────┬──────────────┬──────┘
                               │              │
-                 (no args)    │              │   (any arg)
+                 (no args / --gui)  │       │ (normal CLI flags)
                               ▼              ▼
                         gui_main()        cli_main()
                               │              │
@@ -5727,6 +5732,8 @@ class T:
    └─────────────────────┘
 ```
 
+The dispatcher also special-cases `--gui` and `--startup`; `--startup` calls `gui_main(start_hidden=True)` rather than the CLI.
+
 **Shared services used by both GUI and CLI:**
 
 - `extract_placeholders(docx_path)` — returns a dict of variables found in a template.
@@ -5742,7 +5749,7 @@ class T:
 
 ## 3. 📂 File-by-File Reference
 
-### `src/WordCloner.py` — main module (approx. 1900+ lines)
+### `WordCloner.py` — main application module
 
 Contains **everything** except icons, paths, and translations:
 
@@ -5787,30 +5794,27 @@ Contains **everything** except icons, paths, and translations:
 | `gui_main` | GUI entry. |
 | `main` | Dispatcher. |
 
-### `src/wordcloner_paths.py`
+### `wordcloner_paths.py`
 
-Resolves `APP_ROOT`, `WORDS_DIR`, `TEMPLATES_JSON`, `SETTINGS_JSON`. Handles legacy migration from two previous folders:
-- `APP_ROOT / "WordCloner"` (older project-local).
-- `~/Documents/WordCloner` (very old location).
+Resolves the application's data paths and contains legacy migration helpers. The archived source excerpt in this file may describe a different deployment layout. For the user's currently installed build, the confirmed data directory is `C:\ProgramData\WordCloner`; preserve it. Do not change storage code, relocate data, or apply a migration based only on this older snapshot. `WORDCLONER_HOME` is an explicit override in the archived implementation and must not be introduced as an unrequested path change.
 
-**Environment override:** set `WORDCLONER_HOME` to redirect all data to a custom folder (useful for read-only installs).
-
-### `src/wordcloner_icons.py`
+### `wordcloner_icons.py`
 
 Loads SVG icons from `resources/icons/` (or a packaged `wordcloner_assets` module in some distributions). Renders them at requested size and color using `QSvgRenderer`. Caches results with `lru_cache`.
 
 Public functions: `icon_document`, `icon_document_big`, `icon_plus_circle`, `icon_plus_white`, `icon_trash`, `icon_chevron_down`, `icon_grip`, `icon_upload`, `icon_arrow_left`, `icon_gear`, `icon_help`, `icon_status`, `icon_minimize`, `icon_maximize`, `icon_close`, `icon_check`.
 
-### `src/wordcloner_translations.py`
+### `wordcloner_translations.py`
 
 Defines `T` as a class of `_entry(persian, english)` dicts. Usage: `tr(T.some_key, **kwargs)` where `kwargs` fill `{name}` style placeholders.
 
-### `src/WordCloner.spec`
+### `WordCloner.spec`
 
-PyInstaller build spec. Recommended settings:
-- `console=True` with `hide_console='hide-late'` so CLI works while GUI hides the console.
-- Bundle `resources/icons` and `Guide/` via `datas`.
-- Include `PySide6`, `python-docx`, `openpyxl`, `numpy`, `Pillow` etc.
+The current PyInstaller spec is at the project root. It builds `WordCloner.exe`, embeds `app.ico` as the executable icon, copies that same ICO beside the executable for runtime use, and bundles the root `resources/` folder plus `Guide/` when present.
+
+### `WordCloner_Setup.iss`
+
+The current Inno Setup definition is at the project root. It performs a per-user install, registers an uninstall entry for the installing Windows account, provides a Start Menu shortcut and an optional desktop shortcut, and does not add the application folder to `PATH`. The binary install directory and the user-confirmed data directory are separate locations.
 
 ### `resources/icons/*.svg`
 
@@ -5834,7 +5838,7 @@ Video tutorials opened via the **راهنما / Guide** button.
 
 ### `settings.json`
 
-Located at `APP_ROOT / "settings.json"`.
+Located at `C:\ProgramData\WordCloner\settings.json` for the current installed build (the older source snapshot may use `APP_ROOT`; see section 11).
 
 ```json
 {
@@ -5843,7 +5847,8 @@ Located at `APP_ROOT / "settings.json"`.
     "quick_access": ["Article Acceptance", "Invoice"],
     "language": "fa",
     "window_size": [900, 640],
-    "window_maximized": false
+    "window_maximized": false,
+    "launch_on_startup": false
 }
 ```
 
@@ -5855,11 +5860,12 @@ Located at `APP_ROOT / "settings.json"`.
 | `language` | `"fa"` or `"en"` | UI language. |
 | `window_size` | `[w, h]` | Last non-maximized size. |
 | `window_maximized` | bool | Whether the window was maximized on close. |
+| `launch_on_startup` | bool | Start WordCloner with Windows; defaults to `false`. |
 
 **Load precedence:**
 1. Start from `DEFAULT_SETTINGS`.
 2. If `settings.json` exists and is a dict, `update()` with it.
-3. Sanitize: `quick_access` must be a list, `language` must be `"fa"` or `"en"`.
+3. Sanitize: `quick_access` must be a list, `language` must be `"fa"` or `"en"`, and an invalid `launch_on_startup` value resets to `false`.
 
 ### `templates.json`
 
@@ -5991,7 +5997,7 @@ For each paragraph:
 | 1 | `AddLetterPage` | Register a new template. |
 | 2 | `EditLetterPage` | Fill variables and issue one document. |
 | 3 | `BulkIssuePage` | Excel-driven batch issuance. |
-| 4 | `SettingsPage` | Language, output dir, wrapper. |
+| 4 | `SettingsPage` | Language, output dir, wrapper, and Windows startup option. |
 
 ### 6.2 Navigation signals
 
@@ -6052,14 +6058,19 @@ Qt's `QColorDialog` is used but its labels ("OK", "Cancel", "HTML") are replaced
 | `-c` | `--count` | flag | Print variable count and exit. |
 | | `--force` | flag | Overwrite single-mode output. |
 | | `--gui` | flag | Force GUI (used by desktop shortcut). |
+| | `--startup` | internal flag | Used by the Windows startup entry; starts the GUI hidden. |
+
+**Invocation note:** the current installer does not add WordCloner to `PATH`. The examples use the executable name for readability; otherwise run `WordCloner.exe` from its install folder or use its full path.
 
 ### 7.2 Mode decision tree
 
 ```
-If --count:                 → count mode (print count, exit 0)
-Elif --excel:               → batch mode
-Elif -o and -v:             → single issuance
-Else:                       → parser.error(...)
+If args == ["--startup"]:   → GUI, start_hidden=True
+Elif args == ["--gui"]:     → normal GUI
+Elif --count:                 → count mode (print count, exit 0)
+Elif --excel:                 → batch mode
+Elif -o and -v:               → single issuance
+Else:                         → parser.error(...)
 ```
 
 **Conflicts checked:**
@@ -6123,6 +6134,8 @@ def tr(item, **kwargs):
 - `_dir()` returns `Qt.RightToLeft` or `Qt.LeftToRight`.
 - Applied to: the whole app (`app.setLayoutDirection`), dialogs, popups, combos.
 
+**CLI language:** command-line help, status, and error messages are always English. The saved `language` setting affects the GUI only.
+
 ### 8.4 Adding a new language (developer task)
 
 1. Add the code to `LANG_MAP` (`"fr": "french"`).
@@ -6138,7 +6151,8 @@ def tr(item, **kwargs):
 - **Source of truth:** `SETTINGS` module-level dict.
 - **Persistence:** `save_settings()` writes UTF-8 JSON with `indent=4`.
 - **Load:** `load_settings()` resets to defaults, then updates from disk.
-- **Validation:** on load, `quick_access` must be a list; `language` must be `"fa"` or `"en"`.
+- **Validation:** on load, `quick_access` must be a list, `language` must be `"fa"` or `"en"`, and `launch_on_startup` must be a boolean (invalid values reset to `false`).
+- **Startup default:** `launch_on_startup` is `false`. When enabled on Windows, the Settings page manages the current user's Run entry; the startup command uses `--startup` so the app can initialize in the tray without showing its main window.
 
 **Auto-save triggers:**
 - Settings page save button.
@@ -6154,71 +6168,49 @@ def tr(item, **kwargs):
 
 ## 10. 🎨 Icon & Resource System
 
-### 10.1 Where icons come from
+### 10.1 Local UI icons
 
-`wordcloner_icons.ICON_DIR` resolves to:
+The PySide UI icons are local SVG files under the project-root `resources/icons/` directory. `wordcloner_icons.py` loads them locally; no network access is required at runtime. In a regular wheel package only, it can fall back to `wordcloner_assets/icons` if the root resources folder is absent. Keep `resources/` beside the application files and include it in the PyInstaller bundle.
 
-1. `Path(sys.executable).parent / "resources" / "icons"` if frozen.
-2. `Path(__file__).parent / "resources" / "icons"` if running from source.
-3. Fallback: `importlib.resources.files("wordcloner_assets").joinpath("icons")` — used when installed as a wheel with a private asset package.
+### 10.2 SVG rendering
 
-### 10.2 Rendering
+`_render_svg_icon(name, size, color)` reads `name.svg`, replaces SVG `currentColor` with the requested color, renders it through `QSvgRenderer` into a transparent `QPixmap`, and returns a `QIcon`. Results are cached by `(name, size, color)` with `lru_cache`.
 
-`_render_svg_icon(name, size, color)`:
+### 10.3 Shared application icon
 
-1. Read `name.svg` as text.
-2. Replace `currentColor` with the desired hex color.
-3. Build `QSvgRenderer` from a `QByteArray`.
-4. Render into a transparent `QPixmap` of the requested size.
-5. Wrap in `QIcon`.
+`app.ico` is distinct from the small SVG UI icons. The same multi-size ICO is embedded by `WordCloner.spec` and copied beside `WordCloner.exe`; runtime code uses it for the Qt application/main window and the system tray. Keep this file shared rather than substituting separate Taskbar and Tray artwork.
 
-Cached by `(name, size, color)` with `lru_cache(maxsize=256)`.
+### 10.4 Adding a UI icon
 
-### 10.3 Adding an icon
-
-1. Drop `new-icon.svg` in `resources/icons/`.
-2. Add it to `WordCloner.spec` under `datas`.
-3. Add a public function in `wordcloner_icons.py`.
-
----
+Place the local SVG in `resources/icons/`, add or update its public loader function in `wordcloner_icons.py`, and keep the entire root `resources/` directory included in the PyInstaller build.
 
 ## 11. 🛣️ Paths & Legacy Migration
 
-### 11.1 Current storage layout (frozen .exe)
+### 11.1 Current installed data location
 
-```
-<install-dir>/                     ← APP_ROOT
-├── wordcloner.exe
-├── app.ico
-├── settings.json                  ← created on first save
-├── templates.json                 ← created on first template save
-├── Words/                         ← copied template .docx files
-├── resources/icons/               ← SVG assets
-├── Guide/                         ← MP4 tutorials
-└── _internal/                     ← PyInstaller runtime
+The user has explicitly confirmed that the current installed build stores its application data at:
+
+```text
+C:\ProgramData\WordCloner
 ```
 
-### 11.2 Override via environment variable
+The folder contains the app's data files as they are created, including `settings.json`, `templates.json`, and `Words/`. **Keep this path unchanged.** This documentation patch does not alter application storage logic and does not move or migrate user data.
 
-```
-set WORDCLONER_HOME=C:\WordClonerData
-wordcloner.exe
-```
+The archived source snapshot and some files in an older workspace may show `APP_ROOT` beside the executable. That is a source/deployment discrepancy, not permission to change the user's installed data location. If a later task requires reconciling code with the installed build, first confirm the desired implementation with the user.
 
-All data (`settings.json`, `templates.json`, `Words/`) will be created under that folder.
+### 11.2 Keep the three directory roles separate
 
-### 11.3 Migration sources
+| Role | Current location / source |
+|------|---------------------------|
+| Application data | `C:\ProgramData\WordCloner` (user-confirmed; preserve) |
+| Application binaries | Per-user Inno Setup default: `%LOCALAPPDATA%\Programs\WordCloner` |
+| Issued Word documents | The folder selected in Settings (`output_dir`); separate from application data |
 
-On every startup, `migrate_legacy_data()` runs and:
+The bundled `resources/` and local `Guide/` video files belong with the application files, not in the output directory.
 
-1. Copies missing files from `APP_ROOT / "WordCloner"` (legacy project-local).
-2. Copies missing files from `~/Documents/WordCloner`.
-3. Merges `templates.json` records (existing root-level records win).
-4. Rewrites old absolute `address` values to point under the new root.
+### 11.3 Optional environment override and legacy data
 
-**Originals are never deleted.** Users must remove them manually.
-
----
+The archived path-module snapshot documents `WORDCLONER_HOME` and older migration sources. Do not set an override, move files, delete old copies, or run a migration as part of this documentation patch. For questions about existing legacy copies, inspect the actual installed release and ask before changing or removing data.
 
 ## 12. 📊 Batch Issuance from Excel
 
@@ -6260,110 +6252,51 @@ The folder name is **translated**, meaning a user who switches languages mid-pro
 
 ## 13. 🔔 System Tray Integration
 
-- `QSystemTrayIcon` with `app.ico` (or a fallback icon).
-- Context menu (rebuilt on any Quick Access change):
-  - **Open App**
-  - **Quick Access** header + one action per valid template name.
-  - **Exit**
-- Left click / double click toggles visibility.
+- `QSystemTrayIcon` uses the shared `app.ico` (with the documented fallback only if the ICO is unavailable).
+- Context menu: **Open App**, **Quick Access** entries for valid templates, and **Exit**.
+- Single- or double-clicking the tray icon toggles visibility: if the main window is hidden, it opens/restores it; if it is already visible, it hides it. **Open App** explicitly shows the main window.
 
-**Close behavior:** closing the window hides it (does not quit). Only **Exit** in the tray menu (or a `QApplication.quit()` call) sets `_really_quit = True` and closes for good.
+**Windows startup:** the Settings option is off by default. When enabled, WordCloner registers a current-user Windows Run entry and launches with `--startup`. The app initializes its tray icon but does not show the main window during normal startup; clicking the tray icon or choosing **Open App** opens it. If Windows reports that the system tray is unavailable, the current program has a fallback that shows the main window.
 
----
+**Close behavior:** closing the window hides it rather than quitting. Choose **Exit** from the tray menu to quit.
 
 ## 14. 📦 Build & Packaging
 
-### 14.1 PyInstaller command (from `src/`)
+### 14.1 PyInstaller command (from the project root)
 
 ```bat
-pyinstaller --noconfirm --clean WordCloner.spec
+py -m PyInstaller --noconfirm --clean WordCloner.spec
 ```
 
-### 14.2 Recommended `.spec` settings
+### 14.2 Current spec behavior
 
-- `console=True` with `hide_console='hide-late'` — allows CLI to work while hiding the console during GUI.
-- `datas`:
-  - `("resources/icons", "resources/icons")`
-  - `("../Practice", "Practice")` — optional.
-  - `("Guide", "Guide")` — video files.
-  - `("app.ico", ".")`
-- `hiddenimports`: `docx`, `openpyxl`, `PySide6.QtSvg`, `win32gui`, `win32con`.
-- `excludes`: `tkinter`, `matplotlib`, `scipy` (unless needed).
-
-### 14.3 Distribution folder
-
-PyInstaller's `--onedir` (default) produces:
-
-```
-dist/WordCloner/
-├── wordcloner.exe
-├── app.ico
-├── python3.dll, python314.dll, VCRUNTIME140*.dll
-├── libcrypto-3.dll, libffi-8.dll, libssl-3.dll
-├── _asyncio.pyd, ... (CPython stdlib DLLs)
-├── PySide6/      (Qt DLLs, plugins, translations)
-├── docx/         (python-docx templates)
-├── lxml/         (XML parser)
-├── numpy/, PIL/, psutil/, shiboken6/, win32/
-├── resources/icons/
-└── _internal/
-```
-
-**This entire folder must be shipped to the installer.** The Inno Setup script copies `dist\WordCloner\*` recursively.
-
----
+- Produces an onedir distribution at `dist\WordCloner\` with `WordCloner.exe`.
+- Uses `app.ico` both as the embedded executable icon and as a bundled runtime file beside the executable.
+- Bundles the project-root `resources/` directory and includes `Guide/` when that local video folder exists.
+- Keeps `console=True` with `hide_console='hide-late'` so CLI output remains available while GUI startup can hide the owned console.
+- Typical contents include `WordCloner.exe`, `app.ico`, Python/Qt runtime files, `resources/`, and `Guide/` when supplied; exact dependency folders vary by build environment.
+- The installer consumes the complete `dist\WordCloner\` tree recursively; do not distribute only the EXE.
 
 ## 15. 📦 Installer (Inno Setup)
 
-### 15.1 Key sections
+### 15.1 Current installer behavior
 
-```iss
-[Setup]
-ChangesEnvironment=yes
-PrivilegesRequired=admin
+`WordCloner_Setup.iss` is the installer source. Compile it after building the PyInstaller distribution:
 
-[Tasks]
-Name: "desktopicon"; Description: "..."; Flags: checkedonce
-
-[Files]
-Source: "dist\WordCloner\*"; DestDir: "{app}"; Flags: recursesubdirs
-
-[Icons]
-Name: "{group}\WordCloner";       Filename: "{app}\wordcloner.exe"
-Name: "{autodesktop}\WordCloner"; Filename: "{app}\wordcloner.exe"; Tasks: desktopicon
-
-[Registry]
-Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
-    ValueType: expandsz; ValueName: "Path"; \
-    ValueData: "{olddata};{app}"; Check: NeedsAddPath('{app}')
+```bat
+ISCC.exe WordCloner_Setup.iss
 ```
 
-### 15.2 The `NeedsAddPath` helper
+The current script:
 
-Prevents duplicate PATH entries:
+- Installs per-user by default to `%LOCALAPPDATA%\Programs\WordCloner` (`PrivilegesRequired=lowest`).
+- Sets `Uninstallable=yes` and `CreateUninstallRegKey=yes`, so WordCloner appears in Windows' installed-apps/uninstall list for the account that installed it.
+- Creates a Start Menu shortcut and offers an optional desktop shortcut.
+- Copies `dist\WordCloner\*` recursively, including local resources and videos when present.
+- Does **not** add the application folder to `PATH`.
+- Removes its current-user startup Run value during uninstall, but leaves application data and issued documents untouched.
 
-```pascal
-function NeedsAddPath(Param: string): boolean;
-var OrigPath: string;
-begin
-  if not RegQueryStringValue(HKLM, 'SYSTEM\...\Environment', 'Path', OrigPath) then
-  begin
-    Result := True;
-    exit;
-  end;
-  Result := Pos(';' + Param + ';', ';' + OrigPath + ';') = 0;
-end;
-```
-
-### 15.3 Uninstall cleanliness
-
-`RemoveFromPath` in `CurUninstallStepChanged(usPostUninstall)` strips the install directory from `PATH` so it doesn't leak.
-
-### 15.4 Post-install
-
-The user must **open a new Command Prompt** for the PATH change to take effect. Old CMD windows keep the inherited environment.
-
----
+**Important path distinction:** the installer binary directory is not the data directory. The user-confirmed current data location remains `C:\ProgramData\WordCloner`; do not change it as part of installer or documentation work.
 
 ## 16. ❓ Common User Questions & Answers
 
@@ -6408,19 +6341,21 @@ Check **Settings → Output Folder**. Default is the user's Desktop. Batch outpu
 
 ### Q6: "How do I make the CLI work?"
 
-The Inno Setup installer adds the folder to `PATH`. After installation, **open a new CMD window** and run:
+The current installer does not add WordCloner to `PATH`. Run `WordCloner.exe` from the installation folder or use its full path, for example:
 
 ```bat
-wordcloner --help
+"%LOCALAPPDATA%\Programs\WordCloner\WordCloner.exe" --help
 ```
+
+If a user has separately configured `PATH`, the shorter command can be used; this is not done by the installer.
 
 ### Q7: "Where are templates and settings stored?"
 
-In the same folder as `wordcloner.exe` (or, if `WORDCLONER_HOME` is set, in that folder).
+For the current installed build, the user-confirmed data directory is `C:\ProgramData\WordCloner`. Keep it separate from the executable's install folder and from the output folder selected in Settings. Older source snapshots may describe a different root; do not move existing data based on those snapshots.
 
 ### Q8: "The video guide won't open."
 
-Check that `Guide\Persian_guide.mp4` or `Guide\English_guide.mp4` exists next to `wordcloner.exe`. The correct file is chosen based on the UI language.
+The Guide button uses local files in the application's `Guide/` folder: `English_guide.mp4` for English or `Persian_guide.mp4` for Persian, selected from the GUI language. This release uses local MP4 videos; it does not require `guide.json`. Verify the selected file is present beside the application files.
 
 ### Q9: "How do I add a template to Quick Access?"
 
@@ -6544,7 +6479,7 @@ Any time a template "doesn't show up", open `templates.json` and check:
 
 ### 19.4 Common Windows-only bugs
 
-- PATH not updated → check `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment\Path`.
+- CLI command not found → the current installer does not add `PATH`; run `WordCloner.exe` from the install directory or use its full path.
 - Tray icon missing → check Windows "Show hidden icons" or the notification area settings.
 - Frozen app can't find icons → verify `resources/icons/*.svg` is present next to the `.exe`.
 
@@ -6561,7 +6496,7 @@ Any time a template "doesn't show up", open `templates.json` and check:
 | **Batch issuance** | Generating many documents from an Excel workbook. |
 | **`auto_size`** | Inferred font size for a variable, from surrounding text. |
 | **Frozen** | A PyInstaller-built `.exe` — `sys.frozen` is `True`. |
-| **`APP_ROOT`** | The directory WordCloner treats as its data root. |
+| **`APP_ROOT`** | Data root used by a particular build; the current installed build's confirmed location is `C:\ProgramData\WordCloner`. Historical source snapshots may differ. |
 | **`WORDCLONER_HOME`** | Environment variable to override `APP_ROOT`. |
 | **`WrapperCountError`** | Raised when the number of markers is odd. |
 | **`ExcelImportError`** | Raised when a workbook can't be mapped to the template. |
@@ -6619,6 +6554,35 @@ Say so explicitly. Suggest the user:
 3. Post a minimal `.docx` template that reproduces the issue.
 
 Do not speculate about undocumented behavior.
+
+---
+
+<!-- AI-README CURRENT RELEASE PATCH v1 -->
+## 22. 🧭 Current Release Overlay
+
+This overlay summarizes the current installed behavior and takes precedence over conflicting historical snapshots elsewhere in this guide.
+
+### 22.1 Data, install, and output paths
+
+- **Application data:** `C:\ProgramData\WordCloner` — explicitly confirmed by the user; preserve this location. The patch is documentation-only and does not change storage code or migrate data.
+- **Application install:** current Inno Setup default is `%LOCALAPPDATA%\Programs\WordCloner`.
+- **Issued documents:** written to the GUI's configured `output_dir`.
+
+Do not conflate these three locations. The embedded older `wordcloner_paths.py` snapshot can disagree with the installed deployment and must not override the confirmed data path.
+
+### 22.2 Startup and tray
+
+Startup is disabled by default. When enabled on Windows, the current-user startup entry launches WordCloner with `--startup`, keeps the main window hidden, and initializes the tray icon. A tray click opens the window when hidden; **Open App** also opens it. Closing the window hides the app; **Exit** quits it.
+
+### 22.3 Icons and video Guide
+
+- Local PySide interface icons are stored under the project-root `resources/icons/` directory.
+- The same `app.ico` is embedded for the executable and copied beside it for the Qt application/window and system tray; Taskbar and Tray should use the shared asset.
+- The Guide uses local `Guide/English_guide.mp4` and `Guide/Persian_guide.mp4`, selected by GUI language. It is not based on `guide.json`.
+
+### 22.4 Build and install
+
+Build from the project root with `py -m PyInstaller --noconfirm --clean WordCloner.spec`, then compile `WordCloner_Setup.iss` with Inno Setup (`ISCC.exe`). The installer is per-user, creates an uninstall entry for the installing account, and does not add `PATH`. Uninstall removes the startup registration but preserves user data.
 
 ---
 
@@ -6715,8 +6679,8 @@ SettingsPage
 ## 📎 Appendix D — Versioning Notes
 
 - **AppUserModelID:** `com.wordcloner.letterissuance.1.0` — set via `SetCurrentProcessExplicitAppUserModelID`. Changing this breaks taskbar pinning.
-- **Installer name:** `WordCloner-setup-63bit.exe`.
-- **GUID in Inno Setup:** generate a fresh one for each release branch; keeping it constant across versions enables "upgrade" installs.
+- **Installer name:** `installer\WordCloner_Setup.exe` when compiled from the current `WordCloner_Setup.iss`.
+- **Inno Setup AppId:** keep the current AppId stable for normal in-place upgrades; change it only when a separate installation identity is intentional.
 - **Python version compatibility:** tested with **3.10+**. Uses `str.removeprefix`-style APIs only where present; if downgrading, check `Path.unlink(missing_ok=True)` (3.8+).
 
 ---

@@ -54,7 +54,7 @@ except ImportError:
 #  Paths
 # ═════════════════════════════════════════════════════════════════
 from wordcloner_paths import (
-    APP_ROOT, DOCUMENTS_DIR, WORDCLONER_DIR, WORDS_DIR,
+    DOCUMENTS_DIR, WORDCLONER_DIR, WORDS_DIR,
     TEMPLATES_JSON, SETTINGS_JSON, migrate_legacy_data,
 )
 
@@ -70,7 +70,7 @@ DEFAULT_SETTINGS = {
     "language": "fa",     # fa | en
     "window_size": [720, 600],
     "window_maximized": False,
-    "launch_on_startup": False,
+    "launch_on_startup": True,
 }
 SETTINGS = dict(DEFAULT_SETTINGS)
 
@@ -89,7 +89,7 @@ def load_settings():
                 if SETTINGS.get("language") not in ("fa", "en"):
                     SETTINGS["language"] = "fa"
                 if not isinstance(SETTINGS.get("launch_on_startup"), bool):
-                    SETTINGS["launch_on_startup"] = False
+                    SETTINGS["launch_on_startup"] = True
         except Exception as e:
             print(f"[error] reading settings: {e}")
 
@@ -220,6 +220,26 @@ from wordcloner_icons import (
     icon_gear, icon_help, icon_status, icon_minimize, icon_maximize, icon_close,
     icon_check,
 )
+
+
+def _application_icon_path():
+    """Locate the shared app icon beside the source file or frozen executable."""
+    app_dir = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parent
+    )
+    return app_dir / "app.ico"
+
+
+APP_ICON_PATH = _application_icon_path()
+
+
+def _application_icon():
+    """Return the icon shared by the EXE window and system tray."""
+    if APP_ICON_PATH.is_file():
+        return QIcon(str(APP_ICON_PATH))
+    return icon_document(32, C_DARK_GREEN)
 
 
 def apply_color_button_style(btn, hex_color):
@@ -3933,6 +3953,18 @@ class SettingsPage(QWidget):
         if sys.platform == "win32":
             lay.addWidget(self.launch_startup_check)
 
+        self.support_note = QLabel(tr(T.settings_contact_note))
+        self.support_note.setTextFormat(Qt.RichText)
+        self.support_note.setOpenExternalLinks(True)
+        self.support_note.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.support_note.setLayoutDirection(_dir())
+        self.support_note.setWordWrap(True)
+        self.support_note.setStyleSheet(
+            f"color: {C_MUTED}; background: transparent; font-size: 10px; "
+            f"QLabel a {{ color: {C_GREEN}; text-decoration: underline; }}"
+        )
+        lay.addWidget(self.support_note)
+
         lay.addStretch()
 
         btn_row = QHBoxLayout()
@@ -4008,7 +4040,7 @@ class SettingsPage(QWidget):
             ThemedDialog.warning(self, tr(T.error), tr(T.err_wrapper_empty))
             return
 
-        new_launch_on_startup = False
+        new_launch_on_startup = SETTINGS.get("launch_on_startup") is True
         if sys.platform == "win32":
             new_launch_on_startup = self.launch_startup_check.isChecked()
             try:
@@ -4070,6 +4102,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.setWindowIcon(_application_icon())
         self._built_language = SETTINGS.get("language", "fa")
         self._really_quit = False
         self.setWindowTitle(tr(T.app_title))
@@ -4153,11 +4186,7 @@ class MainWindow(QMainWindow):
 
     def _setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
-        icon_path = APP_ROOT / "app.ico"
-        if icon_path.exists():
-            self.tray_icon.setIcon(QIcon(str(icon_path)))
-        else:
-            self.tray_icon.setIcon(icon_document(32, C_DARK_GREEN))
+        self.tray_icon.setIcon(_application_icon())
         self.tray_icon.setToolTip(tr(T.app_title))
 
         self.tray_menu = QMenu()
@@ -4907,8 +4936,7 @@ def gui_main(start_hidden=False):
 
     # Strip any launcher-specific arguments before Qt initializes.
     app = QApplication([sys.argv[0]])
-    icon_path = APP_ROOT / "app.ico"
-    app.setWindowIcon(QIcon(str(icon_path)))
+    app.setWindowIcon(_application_icon())
     app.setQuitOnLastWindowClosed(False)
 
     if start_hidden and not QSystemTrayIcon.isSystemTrayAvailable():

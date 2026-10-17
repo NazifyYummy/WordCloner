@@ -202,12 +202,16 @@ class T:
         "Open the local WordCloner video guide with the default player.",
     )
     launch_on_startup = _entry(
-        "اجرا هنگام روشن شدن کامپیوتر",
-        "Launch WordCloner at startup",
+        "اجرای WordCloner هنگام ورود به Windows",
+        "Launch WordCloner at Windows sign-in",
     )
     launch_on_startup_tooltip = _entry(
-        "در شروع Windows، برنامه در System Tray اجرا می‌شود و پنجره نمایش داده نمی‌شود. این گزینه به‌طور پیش‌فرض خاموش است.",
-        "At Windows sign-in, start WordCloner in the system tray without showing its window. This option is off by default.",
+        "در زمان ورود به Windows، WordCloner در System Tray و بدون نمایش پنجره اجرا می‌شود. این گزینه به‌طور پیش‌فرض فعال است.",
+        "At Windows sign-in, WordCloner starts in the system tray without showing its main window. This option is enabled by default.",
+    )
+    settings_contact_note = _entry(
+        "چنانچه دربارهٔ استفاده از WordCloner پرسشی دارید، به راهنمایی نیاز دارید یا پیشنهادی برای بهبود برنامه در ذهن دارید، خوشحال می‌شویم از طریق ایمیل <a href=\"mailto:M.J.Nazify.Yummy@gmail.com\">M.J.Nazify.Yummy@gmail.com</a> با ما در میان بگذارید. از توجه و بازخورد ارزشمند شما سپاسگزاریم و با کمال میل پاسخ‌گوی شما خواهیم بود.",
+        "If you have any questions about using WordCloner, need assistance, or have an idea or suggestion for improving the application, please feel free to email us at <a href=\"mailto:M.J.Nazify.Yummy@gmail.com\">M.J.Nazify.Yummy@gmail.com</a>. We truly appreciate your feedback and will be glad to hear from you.",
     )
     startup_update_error = _entry(
         "تنظیم اجرای خودکار WordCloner در Windows ناموفق بود:\n{err}",
