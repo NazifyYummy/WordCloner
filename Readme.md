@@ -1,3 +1,4 @@
+
 # 📄 WordCloner ✉️
 
 **Letter Issuance System** 🚀 — A desktop application for generating personalized Word documents from templates, one at a time or in bulk. It was designed to **dramatically reduce the time required to issue repetitive letters and circulars in administrative offices and organizations** 🏢, where the same template must be filled with different data many times per day. ⏱️
@@ -40,16 +41,45 @@ WordCloner lets you define a `.docx` template with placeholder variables such as
 
 ## 🖼️ Screenshots
 
+> 📸 **Note about the screenshots / نکته درباره اسکرین‌شات‌ها**
+>
+> Since most readers are likely Persian speakers, the screenshots below are shown in **Persian (فارسی)**. You can change the interface language to **English** at any time via **Settings → App Language**. And don't ask why the whole README isn't in Persian :) .
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/151d2842-a255-42d1-977f-ce141f560318"
+           alt="Home Page — template selection and Quick Access"
+           width="400" />
+      <br/>
+      <sub><b>🏠 Home Page</b><br/>
+      Select a template, pin favorites to Quick Access, or open the settings</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/3bbef273-4d9f-45f7-ae4a-02f19aaf0900"
+           alt="Quick Access from the System Tray"
+           width="400" />
+      <br/>
+      <sub><b>📌 Quick Access from the System Tray</b><br/>
+      Launch a template without opening the main window</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2">
+      <img src="https://github.com/user-attachments/assets/bcb15c1f-8bdd-4fb5-a3aa-8826c9339b1a"
+           alt="Issuance Page — variable values and formatting"
+           width="400" />
+      <br/>
+      <sub><b>📝 Issuance Page</b><br/>
+      Fill in each variable, adjust font and color per field, then generate the final letter</sub>
+    </td>
+  </tr>
+</table>
+
 
 ## 💾 Installation
 
-### 🪟 Windows (recommended)
-
-1. ⬇️ Download and run **`WordCloner_Setup.exe`**. The current Inno Setup build writes the installer to `installer/WordCloner_Setup.exe`.
-2. 🖱️ Follow the setup wizard. The default installation is per-user at `%LOCALAPPDATA%\Programs\WordCloner` and does not require a machine-wide `Program Files` installation.
-3. WordCloner is registered in the Windows uninstall list for the account that installed it. The installer creates a Start Menu shortcut and can create an optional desktop shortcut.
-
-> **CLI note:** The installer does **not** add WordCloner to `PATH`. To use the CLI after installation, you have access to 'wordcloner' by cmd.
+Grab the latest **`WordCloner_Setup.exe`** from the [Releases](https://github.com/NazifyYummy/WordCloner/releases) page and run it. The installation wizard will handle the rest.
 
 ---
 
