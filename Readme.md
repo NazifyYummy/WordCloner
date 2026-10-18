@@ -1,7 +1,7 @@
 
 # 📄 WordCloner ✉️
 
-**Letter Issuance System** 🚀 — A desktop application for generating personalized Word documents from templates, one at a time or in bulk. It was designed to **dramatically reduce the time required to issue repetitive letters and circulars in administrative offices and organizations** 🏢, where the same template must be filled with different data many times per day. ⏱️
+**Letter Issuance System** 🚀 — A desktop application for generating personalized Microsoft Word documents from templates, one at a time or in bulk. It was designed to **dramatically reduce the time required to issue repetitive letters and circulars in administrative offices and organizations** 🏢, where the same template must be filled with different data many times per day. ⏱️
 
 WordCloner lets you define a `.docx` template with placeholder variables such as `##name##` and `##date##`, then issue letters through a clean 🎨 GUI, the command line 💻, or an Excel workbook 📊. Excel batch issuance is ideal for producing hundreds of personalized letters from one spreadsheet. 🎯
 
@@ -235,17 +235,13 @@ This data directory is separate from the executable installation directory and f
 🎥 The Guide button opens a local video using the operating system's default video player.
 
 - 🏠 On the home screen, look for **راهنما / Guide** directly below the **Settings** button near the upper corner of the window.
-- 🖱️ The video is selected according to the GUI language:
-  - **`Persian_guide.mp4`** for the Persian UI.
-  - **`English_guide.mp4`** for the English UI.
-- 📁 Place the videos in the `Guide/` folder beside the application files before building or packaging the release.
-- The current Guide behavior uses these local MP4 files; it does not depend on `guide.json`.
+- You can [Download](https://github.com/NazifyYummy/WordCloner/blob/main/src/Guide/Persian_guide.m4v) it by your self.
 
 ---
 
 ## 🧪 Practice Files
 
-Sample material is provided in the 📁 `examples/` folder:
+Sample material is provided in the 📁 `Practice/` folder:
 
 | 📄 File | 🎯 Purpose |
 |------|---------|
