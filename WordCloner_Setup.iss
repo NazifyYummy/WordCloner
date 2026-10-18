@@ -24,7 +24,6 @@ ChangesEnvironment=yes
 Uninstallable=yes
 CreateUninstallRegKey=yes
 UninstallDisplayName={#AppName}
-UninstallDisplayVersion={#AppVersion}
 UninstallDisplayIcon={app}\{#AppExe}
 
 OutputDir=installer
@@ -41,7 +40,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; \
     GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 
 [Files]
-Source: "dist\WordCloner\*"; DestDir: "{app}"; \
+Source: "src\dist\WordCloner\*"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 
 Source: "vc_redist.x64.exe"; DestDir: "{tmp}"; \

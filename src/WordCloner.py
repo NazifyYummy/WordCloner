@@ -2649,9 +2649,8 @@ class HomePage(QWidget):
             self.quick_access_changed.emit()      # ← جدید
 
     def _open_guide(self):
-        language = SETTINGS.get("language", "fa")
         video_name = (
-            "English_guide.mp4" if language == "en" else "Persian_guide.mp4"
+            "Persian_guide.m4v"
         )
         program_dir = (
             Path(sys.executable).resolve().parent
@@ -4894,7 +4893,7 @@ def _attach_cli_console_if_needed():
         import ctypes
 
         kernel32 = ctypes.windll.kernel32
-        kernel32.AttachConsole(-1)  # ATTACH_PARENT_PROCESS
+        kernel32.AttachConsole(-1)  
         if not kernel32.GetConsoleWindow():
             kernel32.AllocConsole()
         if sys.stdin is None:
@@ -4908,19 +4907,13 @@ def _attach_cli_console_if_needed():
                 "CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1
             )
     except Exception:
-        # Leave the normal Python streams alone when running outside the
-        # expected Windows console environment.
         pass
 
 
-# ═════════════════════════════════════════════════════════════════
-#  GUI startup
-# ═════════════════════════════════════════════════════════════════
 
 def gui_main(start_hidden=False):
     migrate_legacy_data()
 
-    # ─── تشخیص اولین اجرا قبل از بارگذاری settings ───
     first_run = not SETTINGS_JSON.exists()
 
     load_settings()
@@ -4934,7 +4927,6 @@ def gui_main(start_hidden=False):
         except Exception as e:
             print(f"[AppUserModelID] failed: {e}")
 
-    # Strip any launcher-specific arguments before Qt initializes.
     app = QApplication([sys.argv[0]])
     app.setWindowIcon(_application_icon())
     app.setQuitOnLastWindowClosed(False)
@@ -4949,16 +4941,13 @@ def gui_main(start_hidden=False):
             app.setFont(f)
             break
 
-    # ─── اولین اجرا: انتخاب زبان؛ در شروع مخفی dialog نمایش داده نشود ───
     if first_run:
         if not start_hidden:
             dlg = LanguageSelectDialog()
             if dlg.exec() == QDialog.Accepted and dlg.selected_language:
                 SETTINGS["language"] = dlg.selected_language
-            # در غیر این صورت زبان پیش‌فرض (fa) باقی می‌ماند.
         save_settings()
 
-    # setLayoutDirection پس از دیالوگ تا دیالوگ LTR خالص بماند.
     app.setLayoutDirection(_dir())
 
     current = [None]
